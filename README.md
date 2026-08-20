@@ -74,9 +74,9 @@ BoomTimer 换了个思路：**倒计时结束时，一颗炸弹从屏幕正中�
 
 | 平台 | 文件 | 体积 |
 | --- | --- | --- |
-| macOS（Apple Silicon） | `BoomTimer_x.x.x_aarch64.dmg` | 2.5 MB |
-| macOS（Intel） | `BoomTimer_x.x.x_x64.dmg` | 2.6 MB |
-| Windows | `BoomTimer_x.x.x_x64-setup.exe` | 1.4 MB |
+| macOS（Apple Silicon） | `BoomTimer_*_aarch64.dmg` | 2.5 MB |
+| macOS（Intel） | `BoomTimer_*_x64.dmg` | 2.6 MB |
+| Windows | `BoomTimer_*_x64-setup.exe` | 1.4 MB |
 
 装完只占 5.5 MB。之所以能这么小，是因为它用系统自带的浏览器内核，而不是像大多数跨平台应用那样自带一整个 Chrome。
 

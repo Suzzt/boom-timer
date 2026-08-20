@@ -77,6 +77,8 @@
       // Tauri 版的初始化是异步的（要等截图解码 + 两帧预热），
       // 所以先把预热阶段排队的回调抽干，再开始推进时间轴。
       window.__seek = async (T) => {
+        // 先把截图送进去（真实运行时它在动画开跑后 ~0.4 秒到达，引爆前必到）
+        if (shotDeliver) { shotDeliver(shot); await new Promise((r) => setTimeout(r, 60)); }
         for (let i = 0; i < 8; i++) {
           const q2 = queue; queue = [];
           q2.forEach((cb) => cb(0));
@@ -94,11 +96,12 @@
     }
 
     let initCb = null;
+    let shotDeliver = null;
     window.api = {
       onBoomInit: (cb) => { initCb = cb; },
       boomReady: () => {
         (q.get('manual') ? ((f) => f()) : ((f) => setTimeout(f, 60)))(() => initCb({
-          shot: q.get('noshot') ? null : shot,
+          shotPending: !q.get('noshot'),
           intensity: q.get('i') || 'normal',
           sound: false, volume: 0.7,
           fuse: q.get('fuse') !== '0',
@@ -108,6 +111,8 @@
       },
       boomDone: () => { document.title = 'done'; },
       playSound: () => {},
+      // 模拟真实时序：截图在动画开跑之后才送达
+      onBoomShot: (cb) => { if (!q.get('noshot')) shotDeliver = cb; },
     };
   </script>
   <script src="boom.js"></script>

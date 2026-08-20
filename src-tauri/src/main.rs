@@ -109,7 +109,10 @@ struct StatePayload {
 
 #[derive(Serialize, Clone, Debug)]
 struct BoomPayload {
-    shot: Option<String>,
+    /// 抓屏是异步的：窗口先建、动画先跑，截图稍后通过 boom-shot 事件送达。
+    /// true 表示「有权限，正在抓，等着」。
+    #[serde(rename = "shotPending")]
+    shot_pending: bool,
     /// 实验用：覆盖画布像素上限（BOOM_MAXPX）
     #[serde(rename = "maxPx")]
     max_px: Option<f64>,
@@ -416,6 +419,7 @@ fn boom(app: AppHandle, from_timer: bool) {
         s.booming = true;
     }
 
+    let t_boom = std::time::Instant::now();
     sweep_shots(&app);
     let all = monitors();
     let want_all = {
@@ -429,22 +433,60 @@ fn boom(app: AppHandle, from_timer: bool) {
         all.iter().find(|m| m.primary).copied().into_iter().collect()
     };
 
-    let shots = capture_screens(&app, &mons);
-
+    // 关键：先把窗口建起来让动画立刻开跑，再去抓屏。
+    // 抓屏要 0.4 秒以上，「先抓屏再建窗口」会让「时间到」之后有半秒多完全没反应，
+    // 然后炸弹突然出现 —— 最该有反应的那一刻在空转。
+    //
     // 建窗口必须待在后台线程：build() 内部会派发到主线程并阻塞等待，
     // 在主线程闭包里调用会直接死锁。
-    let labels = spawn_overlays(&app, shots, mons);
+    let will_capture = screen_state() == "granted" && !mons.is_empty();
+    let labels = spawn_overlays(&app, will_capture, mons.clone());
+    dbg_log(&app, &format!("浮层已创建，距引爆指令 {:?}", t_boom.elapsed()));
+    BOOM_T0.lock().unwrap().replace(t_boom);
+
+    // 等前端真正跑起来再抓屏。screencapture 子进程很重，和 webview 启动抢 CPU 的话
+    // 两边都慢：实测并发时前端就绪从 146ms 拖到 726ms、抓屏从 460ms 拖到 1.04s。
+    // pending 表由前端的 boom_ready 取走，所以它空了就说明前端已就绪。
+    {
+        let deadline = std::time::Instant::now() + Duration::from_millis(1200);
+        loop {
+            let waiting = {
+                let st = app.state::<Mutex<AppState>>();
+                let s = st.lock().unwrap();
+                labels.iter().any(|(l, _)| s.pending.contains_key(l))
+            };
+            if !waiting || std::time::Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(15));
+        }
+        dbg_log(&app, &format!("前端就绪，开始抓屏，距引爆指令 {:?}", t_boom.elapsed()));
+    }
+
+    // 炸弹飞入有 0.9 秒，抓屏来得及，视觉上无损。
+    if will_capture {
+        let t_cap = std::time::Instant::now();
+        let shots = capture_screens(&app, &mons);
+        dbg_log(&app, &format!("抓屏耗时 {:?}，距引爆指令 {:?}", t_cap.elapsed(), t_boom.elapsed()));
+        for (label, key) in &labels {
+            if let Some(path) = shots.get(key) {
+                let _ = app.emit_to(label.as_str(), "boom-shot", path.clone());
+            }
+        }
+    }
 
     // 等浮层放完自己关闭，最多兜底 12 秒
     let deadline = std::time::Instant::now() + Duration::from_secs(12);
     loop {
         std::thread::sleep(Duration::from_millis(200));
-        let alive = labels.iter().any(|l| app.get_webview_window(l).is_some());
+        let alive = labels
+            .iter()
+            .any(|(l, _)| app.get_webview_window(l).is_some());
         if !alive || std::time::Instant::now() > deadline {
             break;
         }
     }
-    for l in &labels {
+    for (l, _) in &labels {
         if let Some(w) = app.get_webview_window(l) {
             let _ = w.destroy();
         }
@@ -533,9 +575,9 @@ fn monitors() -> Vec<MonitorInfo> {
 /// 在后台线程调用；其中只有原生 objc 那一步会切回主线程
 fn spawn_overlays(
     app: &AppHandle,
-    shots: HashMap<String, String>,
+    shot_pending: bool,
     mons: Vec<MonitorInfo>,
-) -> Vec<String> {
+) -> Vec<(String, String)> {
     let settings = {
         let st = app.state::<Mutex<AppState>>();
         let s = st.lock().unwrap();
@@ -557,7 +599,7 @@ fn spawn_overlays(
         };
 
         let payload = BoomPayload {
-            shot: shots.get(&key).cloned(),
+            shot_pending: shot_pending,
             max_px: std::env::var("BOOM_MAXPX").ok().and_then(|v| v.parse().ok()),
             primary: is_primary,
             intensity: settings.intensity.clone(),
@@ -599,7 +641,7 @@ fn spawn_overlays(
                 let w2 = win.clone();
                 let _ = app.run_on_main_thread(move || platform::raise_overlay(&w2));
                 let _ = win.show();
-                labels.push(label);
+                labels.push((label, key.clone()));
             }
             Err(e) => {
                 eprintln!("爆炸窗口创建失败: {e}");
@@ -613,6 +655,9 @@ fn spawn_overlays(
 
 #[tauri::command]
 fn boom_ready(app: AppHandle, window: tauri::Window) -> Option<BoomPayload> {
+    if let Some(t) = BOOM_T0.lock().unwrap().as_ref() {
+        dbg_log(&app, &format!("前端就绪 {}，距引爆指令 {:?}", window.label(), t.elapsed()));
+    }
     let st = app.state::<Mutex<AppState>>();
     let mut s = st.lock().unwrap();
     s.pending.remove(window.label())
@@ -645,6 +690,8 @@ fn fmt_ms(ms: i64) -> String {
 /// 托盘提示的上一次内容。状态每 250ms 广播一次，但提示只精确到秒，
 /// 没必要每次都去调一次原生 API。
 static LAST_TIP: Mutex<Option<String>> = Mutex::new(None);
+/// 引爆起始时刻，用来量「指令 → 浮层出画」的延迟
+static BOOM_T0: Mutex<Option<std::time::Instant>> = Mutex::new(None);
 
 fn update_tray(app: &AppHandle, state: &StatePayload) {
     let tip = if state.running {

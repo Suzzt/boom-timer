@@ -29,7 +29,9 @@ html, body {
 }
 
 /* 降级底色和爆闪都改由画布绘制，这两个全屏图层留在合成树里只会拖慢速度 */
-#dim, #flash, #msg { display: none; }
+/* 这几个层都不再参与显示：截图只作为画布的图像源，其余全由画布绘制。
+   留着空的全屏图层只会白占合成开销。 */
+#dim, #flash, #msg, #shot { display: none; }
 
 #dim {
   position: absolute;

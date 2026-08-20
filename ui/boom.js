@@ -15,7 +15,7 @@ const flashEl = document.getElementById('flash');
 const msgEl = document.getElementById('msg');
 const msgText = document.getElementById('msg-text');
 const canvas = document.getElementById('fx');
-const ctx = canvas.getContext('2d');
+let ctx = canvas.getContext('2d');
 
 let W = 0, H = 0, DPR = 1, CX = 0, CY = 0, MAXR = 1;
 let cfg = PRESET.normal;
@@ -30,10 +30,18 @@ let cracks = [];
 let shockwaves = [];
 let fireballs = [];
 
+// 飞入阶段的炸弹预渲染成精灵：原来每帧要重建约 24 个渐变对象，
+// 而实测飞入阶段的顿挫率（27%）是引爆后（8%）的三倍多。
+// 24 挡覆盖 0.9 秒，自转每挡只跳 6°，看不出来；按需构建，避免在起爆前一次性卡一下。
+const BOMB_STEPS = 24;
+const BOMB_PAD = 1.6;
+const BOMB_SPRITE_MAX = 448;
+let bombSprites = null;
+let baking = false;
+
 let FUSE_MS = 900;
 const TAIL_MS = 2500;
 let t0 = -1, boomAt = 0, finished = false;
-let shotHandedOver = false;
 
 // ---------------------------------------------------------------- helpers
 
@@ -65,6 +73,7 @@ function resize() {
   CX = W / 2;
   CY = H / 2;
   MAXR = Math.hypot(W, H) / 2;
+  bombSprites = null;
 }
 window.addEventListener('resize', resize);
 
@@ -178,8 +187,8 @@ function bombGeom(u) {
   const R = (Math.min(W, H) * 0.22) / z;
   return {
     R,
-    x: CX + Math.sin(u * 6.4 + 0.7) * R * 0.16 * Math.pow(1 - clamp01(u), 0.6),
-    y: CY + Math.cos(u * 5.1) * R * 0.11 * Math.pow(1 - clamp01(u), 0.6),
+    x: CX + (baking ? 0 : Math.sin(u * 6.4 + 0.7) * R * 0.16 * Math.pow(1 - clamp01(u), 0.6)),
+    y: CY + (baking ? 0 : Math.cos(u * 5.1) * R * 0.11 * Math.pow(1 - clamp01(u), 0.6)),
     rot: -0.85 + u * 2.5,
   };
 }
@@ -324,12 +333,62 @@ function drawBombAt(u, alpha) {
   ctx.restore();
 }
 
-function drawBomb(u) {
-  // 残影：越近速度越快，拖影越明显
+// 把某一挡的炸弹（含三段残影）烘焙进一张小画布。
+// 手法是临时把全局的 ctx / CX / CY 指到精灵画布上，直接复用 drawBombAt，
+// 避免为了预渲染再写一份绘制逻辑。
+function bakeBomb(idx) {
+  const u = idx / (BOMB_STEPS - 1);
+  const savedCtx = ctx, savedCX = CX, savedCY = CY;
+  baking = true;
+  const { R } = bombGeom(u);
+  const want = Math.ceil(R * 2 * BOMB_PAD);
+  const size = Math.max(8, Math.min(BOMB_SPRITE_MAX, want));
+  const scale = size / Math.max(1, want);   // 超过上限时按比例缩小烘焙
+  const c = document.createElement('canvas');
+  c.width = size;
+  c.height = size;
+  ctx = c.getContext('2d');
+  ctx.scale(scale, scale);
+  CX = want / 2;
+  CY = want / 2;
   const blur = 0.35 + u * 0.65;
   drawBombAt(Math.max(0, u - 0.055), 0.1 * blur);
   drawBombAt(Math.max(0, u - 0.025), 0.2 * blur);
   drawBombAt(u, 1);
+  ctx = savedCtx;
+  CX = savedCX;
+  CY = savedCY;
+  baking = false;
+  return { canvas: c, half: want / 2 };
+}
+
+// 一次性把 24 挡全烘出来。绝不能等到动画跑起来再按需烘 ——
+// 飞入阶段只有 30~40 帧，24 挡等于几乎每帧现烘一张，纯属净亏（实测顿挫 27%→33%）。
+// 放在时间轴启动之前做，那时画面还是静止的，这一下卡顿看不见。
+function bakeAllBombs() {
+  bombSprites = new Array(BOMB_STEPS);
+  for (let i = 0; i < BOMB_STEPS; i++) bombSprites[i] = bakeBomb(i);
+}
+
+function drawBomb(u) {
+  if (!bombSprites) bakeAllBombs();
+  let idx = Math.round(clamp01(u) * (BOMB_STEPS - 1));
+  if (idx < 0) idx = 0;
+  if (idx >= BOMB_STEPS) idx = BOMB_STEPS - 1;
+  const sp = bombSprites[idx];
+
+  // 位置和缩放仍然每帧连续计算，只有外观（自转、高光、火花）按挡取
+  const { R, x, y } = bombGeom(u);
+  if (R < 0.5) return;
+  const { R: spR } = (() => {
+    baking = true;
+    const g = bombGeom(idx / (BOMB_STEPS - 1));
+    baking = false;
+    return g;
+  })();
+  const k = R / Math.max(0.001, spR);
+  const half = sp.half * k;
+  ctx.drawImage(sp.canvas, x - half, y - half, half * 2, half * 2);
 }
 
 function drawShockwave(bt) {
@@ -554,6 +613,8 @@ function frame(now) {
   last = now;
 
   (window.__dt = window.__dt || []).push(dt * 1000);
+  (t < boomAt ? (window.__dtFuse = window.__dtFuse || [])
+              : (window.__dtBoom = window.__dtBoom || [])).push(dt * 1000);
   const __js0 = performance.now();
 
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
@@ -573,13 +634,6 @@ function frame(now) {
   }
 
   const bt = (t - boomAt) / 1000;   // 爆炸后秒数
-
-  // 爆炸瞬间把 DOM 上的截图撤掉，之后由画布接管 —— 关键的性能开关：
-  // 让合成器只处理一个不做变换的图层，而不是每帧重新光栅化一个被旋转缩放的全屏图层。
-  if (hasShot && !shotHandedOver) {
-    shotHandedOver = true;
-    shotEl.style.display = 'none';
-  }
 
   // ---- 屏幕震动（作用在画布变换上）
   const sd = cfg.shake / 1000;
@@ -666,6 +720,12 @@ function frame(now) {
 
 // 帧时统计。BOOM_DEBUG=1 时写进日志 —— 这次把掉帧率从 26% 降到 8%
 // 全靠它先证明「瓶颈不在 JS 绘制」，值得长期留着。
+function phase(arr, med) {
+  if (!arr || !arr.length) return 'n/a';
+  const n = arr.filter((v) => v > med * 1.5).length;
+  return `${arr.length}帧/顿挫${n}`;
+}
+
 function perfReport() {
   const d = (window.__dt || []).slice(1).sort((a, b) => a - b);
   if (!d.length) return;
@@ -679,7 +739,8 @@ function perfReport() {
     `节奏=${med.toFixed(1)}ms(≈${Math.round(1000 / med)}fps) ` +
     `p90=${q(0.9)} p99=${q(0.99)} 最大=${q(1)} 帧数=${d.length} ` +
     `顿挫(>1.5倍)=${jank}(${((jank / d.length) * 100).toFixed(0)}%) ` +
-    `JS绘制=${((window.__js || 0) / d.length).toFixed(2)}ms/帧`
+    `[飞入 ${phase(window.__dtFuse, med)} | 引爆后 ${phase(window.__dtBoom, med)}] ` +
+    `JS绘制=${((window.__js || 0) / d.length).toFixed(2)}ms/帧 预烘=${(window.__bake || 0).toFixed(0)}ms`
   );
 }
 
@@ -746,22 +807,28 @@ window.api.onBoomInit(async (p) => {
 
   // 关键：整屏截图有 1~2MB，解码和 GPU 上传要几百毫秒。
   // 不先做掉的话，这笔开销正好砸在炸弹飞来和爆炸的头一秒上，帧率从 60 掉到 20。
-  hasShot = !!opt.shot;
-  if (hasShot) {
-    shotEl.src = opt.shot;
-    shotEl.style.opacity = '1';
+  // 截图是异步送达的（抓屏 0.4 秒，放在动画开跑之后做）。
+  // 飞入阶段浮层保持全透明 —— 用户看到的是自己的真实桌面，比冻结的截图更自然；
+  // 到引爆那一刻才切成画布里的截图，内容跳变被爆闪盖住。
+  hasShot = false;
+  window.api.onBoomShot(async (src) => {
+    // 已经炸开之后才送到就不要了，中途切进来会看着像跳帧
+    if (t0 >= 0 && performance.now() - t0 >= boomAt) return;
+    shotEl.src = src;
     try {
       await (shotEl.decode ? shotEl.decode() : Promise.resolve());
-    } catch { /* 解码失败就当没有快照，后面照样降级 */ }
-    // 触一次 drawImage，把纹理提前推上 GPU
-    ctx.drawImage(shotEl, 0, 0, 1, 1);
-    ctx.clearRect(0, 0, 2, 2);
-  }
-
-  // 再空转两帧，等合成器把这个全屏透明窗口安顿好
-  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      ctx.drawImage(shotEl, 0, 0, 1, 1);   // 提前把纹理推上 GPU
+      ctx.clearRect(0, 0, 2, 2);
+      hasShot = true;
+    } catch { /* 解码失败就维持降级效果 */ }
+  });
 
   spawn();
+
+  // 预烘炸弹精灵并记录耗时，确认这一下没有拖慢首帧
+  const tb = performance.now();
+  bakeAllBombs();
+  window.__bake = performance.now() - tb;
 
   if (opt.sound) {
     if (FUSE_MS > 0) {

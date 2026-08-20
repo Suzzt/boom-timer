@@ -23,10 +23,10 @@ window.api = {
 
   // --- 爆炸浮层
   onBoomInit: (cb) => { boomInitCb = cb; },
+  // 截图是异步送达的：窗口先建、动画先跑，抓完再通过事件把文件路径推过来
+  onBoomShot: (cb) => listen('boom-shot', (e) => cb(convertFileSrc(e.payload))),
   boomReady: () => invoke('boom_ready').then((p) => {
     if (!p || !boomInitCb) return;
-    // 截图以文件路径传过来，走 asset 协议加载，避免几 MB 的 base64 挤 IPC
-    if (p.shot) p.shot = convertFileSrc(p.shot);
     if (p.maxPx) window.__maxpx = p.maxPx;
     boomInitCb(p);
   }),

@@ -10,13 +10,12 @@ html, body {
   -webkit-user-select: none;
 }
 
-/* 所有内容都在 stage 里，抖动作用于 stage —— 带上桌面快照一起抖 */
+/* 震动、爆闪、文案全部由画布绘制，stage 只是个静态容器。
+   这里绝对不要加 will-change / transform —— 多一个被变换的全屏合成层，
+   帧率就会从 60 掉到 20。 */
 #stage {
   position: absolute;
   inset: 0;
-  will-change: transform;
-  transform-origin: 50% 50%;
-  backface-visibility: hidden;
 }
 
 #shot {
@@ -30,7 +29,7 @@ html, body {
 }
 
 /* 降级底色和爆闪都改由画布绘制，这两个全屏图层留在合成树里只会拖慢速度 */
-#dim, #flash { display: none; }
+#dim, #flash, #msg { display: none; }
 
 #dim {
   position: absolute;

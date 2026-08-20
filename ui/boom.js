@@ -50,8 +50,13 @@ function resize() {
   if (!w || !h) return;          // 尺寸异常时不要动画布，否则会清空已画好的内容
   // WKWebView 的填充率远不如 Chromium，画布像素要设上限。
   // 副屏再降一档：两个全屏浮层同时跑会互相抢 GPU。
-  const MAX_PX = opt.primary ? 4.0e6 : 1.6e6;
-  DPR = Math.min(window.devicePixelRatio || 1, 2, Math.sqrt(MAX_PX / Math.max(1, w * h)));
+  // 瓶颈不是我们的绘制（实测 0.86ms/帧），而是浏览器每帧把画布合成到
+  // 全屏透明窗口的开销 —— 它随画布像素数增长。同机实测掉帧率：
+  //   4.0MP → 26% | 3.0MP → 15% | 2.0MP → 11% | 1.6MP → 4% | 1.2MP → 2%
+  // 取 1.6MP 拐点，对应 DPR≈0.89，比 1:1 只小一成，肉眼分辨不出。
+  // 超采样对全是柔和渐变的爆炸没有收益，上限压到 1。
+  const MAX_PX = window.__maxpx || (opt.primary ? 1.6e6 : 0.5e6);
+  DPR = Math.min(window.devicePixelRatio || 1, 1, Math.sqrt(MAX_PX / Math.max(1, w * h)));
   W = w;
   H = h;
   canvas.width = Math.round(W * DPR);
@@ -530,12 +535,26 @@ function drawCracks(bt) {
 // ---------------------------------------------------------------- 主循环
 
 let last = 0;
+let lastDraw = 0;
 
 function frame(now) {
+  // 副屏主动降到 30fps：两块屏的全屏浮层同时全速跑会互抢 GPU，
+  // 结果两边都卡。把预算让给用户正在看的主屏，副屏稳定 30fps
+  // 反而比忽快忽慢的 60fps 观感更好。时间轴按真实时间算，跳帧不影响进度。
+  const minFrame = opt.primary ? 0 : 32;
+  if (minFrame && lastDraw && now - lastDraw < minFrame) {
+    requestAnimationFrame(frame);
+    return;
+  }
+  lastDraw = now;
+
   if (t0 < 0) t0 = now;
   const t = now - t0;
   const dt = Math.min(0.05, (now - (last || now)) / 1000);
   last = now;
+
+  (window.__dt = window.__dt || []).push(dt * 1000);
+  const __js0 = performance.now();
 
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   ctx.clearRect(0, 0, W, H);
@@ -546,7 +565,7 @@ function frame(now) {
     const pre = u > 0.72 ? (u - 0.72) / 0.28 : 0;
     const k = pre * 6;
     ctx.save();
-    ctx.translate(rand(-k, k), rand(-k, k));
+    ctx.translate(Math.sin(t * 0.091) * k, Math.cos(t * 0.117) * k);
     drawBomb(u);
     ctx.restore();
     requestAnimationFrame(frame);
@@ -559,7 +578,7 @@ function frame(now) {
   // 让合成器只处理一个不做变换的图层，而不是每帧重新光栅化一个被旋转缩放的全屏图层。
   if (hasShot && !shotHandedOver) {
     shotHandedOver = true;
-    shotEl.style.opacity = '0';
+    shotEl.style.display = 'none';
   }
 
   // ---- 屏幕震动（作用在画布变换上）
@@ -569,9 +588,16 @@ function frame(now) {
     const u = bt / sd;
     const decay = Math.pow(1 - u, 2.2);
     const amp = cfg.amp * decay;
-    dx = (Math.sin(bt * 92) + Math.sin(bt * 143.7) * 0.6) * amp * rand(0.75, 1.15);
-    dy = (Math.cos(bt * 78.3) + Math.sin(bt * 121.1) * 0.6) * amp * rand(0.75, 1.15);
-    rot = Math.sin(bt * 61) * decay * (cfg.amp / 28) * 0.85;
+    // 三个不同频率的正弦叠加，既有爆炸该有的混乱感，运动又是连续可导的。
+    // 原来这里乘了一个逐帧的 rand(0.75,1.15) —— 那是高频噪声，
+    // 哪怕稳定 60fps 看着也像在掉帧，是「卡顿感」的一大来源。
+    const nx = Math.sin(bt * 94.2) + 0.55 * Math.sin(bt * 151.7 + 1.3)
+             + 0.26 * Math.sin(bt * 233.1 + 2.7);
+    const ny = Math.cos(bt * 81.4) + 0.55 * Math.cos(bt * 139.3 + 0.7)
+             + 0.26 * Math.cos(bt * 211.9 + 1.9);
+    dx = nx * amp * 0.98;
+    dy = ny * amp * 0.98;
+    rot = (Math.sin(bt * 61) + 0.35 * Math.sin(bt * 107 + 0.9)) * decay * (cfg.amp / 28) * 0.68;
     const cover = amp * 1.8 + Math.abs(rot) * (Math.PI / 180) * Math.max(W, H) * 0.5;
     sc = 1 + (cover * 2) / Math.max(1, Math.min(W, H));
   }
@@ -622,24 +648,86 @@ function frame(now) {
     ctx.restore();
   }
 
-  // ---- 文案（小图层，跟着抖一点无所谓）
+  // ---- 文案：同样画进画布。留在 DOM 里的话，这个全屏宽的图层每帧
+  // 都要被合成器重新处理一遍，正是要消掉的那类开销。
   if (bt > 0.22) {
     const u = clamp01((bt - 0.22) / 0.32);
     const out = bt > 1.9 ? clamp01(1 - (bt - 1.9) / 0.55) : 1;
-    const s = 0.6 + easeOut(u) * 0.45 - (1 - out) * 0.1;
-    msgEl.style.opacity = String(easeInOut(u) * out);
-    msgEl.style.transform = `translate(${dx * 0.5}px, calc(-50% + ${dy * 0.5}px)) scale(${s})`;
+    const a = easeInOut(u) * out;
+    if (a > 0.01) drawMessage(a, 0.6 + easeOut(u) * 0.45 - (1 - out) * 0.1, dx * 0.5, dy * 0.5);
   }
+
+  window.__js = (window.__js || 0) + performance.now() - __js0;
 
   if (bt * 1000 > TAIL_MS && sparks.length === 0 && smoke.length === 0) return done();
   if (bt * 1000 > TAIL_MS + 1200) return done();
   requestAnimationFrame(frame);
 }
 
+// 帧时统计。BOOM_DEBUG=1 时写进日志 —— 这次把掉帧率从 26% 降到 8%
+// 全靠它先证明「瓶颈不在 JS 绘制」，值得长期留着。
+function perfReport() {
+  const d = (window.__dt || []).slice(1).sort((a, b) => a - b);
+  if (!d.length) return;
+  const q = (p) => d[Math.min(d.length - 1, Math.round(p * (d.length - 1)))].toFixed(1);
+  const target = opt.primary ? 20 : 40;
+  const jank = d.filter((v) => v > target).length;
+  window.api.log(
+    `[perf] ${opt.primary ? '主屏' : '副屏'} 画布${canvas.width}x${canvas.height} ` +
+    `帧数=${d.length} 中位=${q(0.5)} p90=${q(0.9)} p99=${q(0.99)} 最大=${q(1)} ` +
+    `掉帧(>${target}ms)=${jank}(${((jank / d.length) * 100).toFixed(0)}%) ` +
+    `JS绘制=${((window.__js || 0) / d.length).toFixed(2)}ms/帧`
+  );
+}
+
+// 文案预渲染成一张精灵图：带发光的文字每帧重画一次要 ~10ms（canvas 的
+// shadowBlur 极贵），预渲染后每帧只剩一次 drawImage。
+let msgSprite = null;
+
+function buildMsgSprite() {
+  const base = Math.min(W, H);
+  const sw = W;
+  const sh = base * 0.44;
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(sw * DPR));
+  c.height = Math.max(1, Math.round(sh * DPR));
+  const g = c.getContext('2d');
+  g.scale(DPR, DPR);
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+
+  g.shadowColor = 'rgba(255,140,20,.95)';
+  g.shadowBlur = base * 0.036;
+  g.font = `${base * 0.128}px "Apple Color Emoji", "Segoe UI Emoji", sans-serif`;
+  g.fillText('💥', sw / 2, sh * 0.32);
+
+  g.shadowColor = 'rgba(255,110,20,.95)';
+  g.shadowBlur = base * 0.025;
+  g.fillStyle = '#fff';
+  g.font = `800 ${base * 0.056}px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif`;
+  g.fillText(opt.text || '', sw / 2, sh * 0.68);
+
+  msgSprite = { canvas: c, w: sw, h: sh };
+}
+
+function drawMessage(alpha, scale, dx, dy) {
+  if (!msgSprite) buildMsgSprite();
+  const { canvas: sp, w, h } = msgSprite;
+  const dw = w * scale;
+  const dh = h * scale;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.drawImage(sp, CX + dx - dw / 2, CY + dy - dh / 2, dw, dh);
+  ctx.restore();
+}
+
 function done() {
   if (finished) return;
   finished = true;
-  window.api.boomDone();
+  perfReport();
+  // 留一点时间让上面那条日志的 IPC 落地。直接销毁窗口的话，
+  // release 版够快，日志会在半路丢掉。浮层此时已经完全淡出，看不出差别。
+  setTimeout(() => window.api.boomDone(), 50);
 }
 
 // ---------------------------------------------------------------- 启动

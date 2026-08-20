@@ -39,7 +39,7 @@ impl Default for Settings {
             volume: 0.7,
             intensity: "normal".into(),
             fuse: true,
-            all_screens: true,
+            all_screens: false,
             messages: vec![
                 "起来动一动！".into(),
                 "喝口水吧".into(),
@@ -110,6 +110,9 @@ struct StatePayload {
 #[derive(Serialize, Clone, Debug)]
 struct BoomPayload {
     shot: Option<String>,
+    /// 实验用：覆盖画布像素上限（BOOM_MAXPX）
+    #[serde(rename = "maxPx")]
+    max_px: Option<f64>,
     /// 副屏走轻量档：两个全屏浮层同时跑会互相抢 GPU，把帧率从 60 拖到 20
     primary: bool,
     intensity: String,
@@ -543,6 +546,7 @@ fn spawn_overlays(
 
         let payload = BoomPayload {
             shot: shots.get(&key).cloned(),
+            max_px: std::env::var("BOOM_MAXPX").ok().and_then(|v| v.parse().ok()),
             primary: is_primary,
             intensity: settings.intensity.clone(),
             sound: settings.sound && is_primary,

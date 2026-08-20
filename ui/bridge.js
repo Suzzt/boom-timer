@@ -27,6 +27,7 @@ window.api = {
     if (!p || !boomInitCb) return;
     // 截图以文件路径传过来，走 asset 协议加载，避免几 MB 的 base64 挤 IPC
     if (p.shot) p.shot = convertFileSrc(p.shot);
+    if (p.maxPx) window.__maxpx = p.maxPx;
     boomInitCb(p);
   }),
   boomDone: () => invoke('boom_done'),

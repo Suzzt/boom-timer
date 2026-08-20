@@ -670,12 +670,15 @@ function perfReport() {
   const d = (window.__dt || []).slice(1).sort((a, b) => a - b);
   if (!d.length) return;
   const q = (p) => d[Math.min(d.length - 1, Math.round(p * (d.length - 1)))].toFixed(1);
-  const target = opt.primary ? 20 : 40;
-  const jank = d.filter((v) => v > target).length;
+  // 阈值不能写死 20ms：显示器可能是 30Hz，或者系统开了低电量模式把刷新率压到 30Hz。
+  // 以实测中位数为基准节奏，超过 1.5 倍才算真正的顿挫。
+  const med = d[Math.floor(d.length / 2)];
+  const jank = d.filter((v) => v > med * 1.5).length;
   window.api.log(
     `[perf] ${opt.primary ? '主屏' : '副屏'} 画布${canvas.width}x${canvas.height} ` +
-    `帧数=${d.length} 中位=${q(0.5)} p90=${q(0.9)} p99=${q(0.99)} 最大=${q(1)} ` +
-    `掉帧(>${target}ms)=${jank}(${((jank / d.length) * 100).toFixed(0)}%) ` +
+    `节奏=${med.toFixed(1)}ms(≈${Math.round(1000 / med)}fps) ` +
+    `p90=${q(0.9)} p99=${q(0.99)} 最大=${q(1)} 帧数=${d.length} ` +
+    `顿挫(>1.5倍)=${jank}(${((jank / d.length) * 100).toFixed(0)}%) ` +
     `JS绘制=${((window.__js || 0) / d.length).toFixed(2)}ms/帧`
   );
 }

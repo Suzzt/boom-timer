@@ -34,20 +34,6 @@ macOS 与 Windows 双端。
 
 浮层**全程点击穿透**，不会打断你正在做的事。
 
-## 两个版本
-
-仓库里有两套外壳，共用同一套渲染层（`boom.js` 的爆炸动画逻辑几乎逐行相同）：
-
-| | `tauri/`（主线） | `src/`（Electron，备用） |
-| --- | --- | --- |
-| macOS 安装包 | **2.6 MB** | 95 MB |
-| Windows 安装包 | **1.4 MB** | 91 MB |
-| 装完占用 | **5.5 MB** | 230 MB |
-| 原理 | 用系统自带 WebView | 自带一整套 Chromium |
-| Windows 包 | 需要在 Windows 上构建（见 CI） | macOS 上就能直接打 |
-
-Electron 版留着是因为它能在 macOS 上一次性打出两端安装包，且不依赖任何构建环境；Tauri 版是日常使用的推荐版本。
-
 ## 功能
 
 - 倒计时预设 15 / 25 / 45 / 60 分钟，或自定义任意分钟数
@@ -76,13 +62,10 @@ cd tauri && npm install && npm run dev
 单独调爆炸动画（不用起客户端，浏览器里逐帧看）：
 
 ```bash
-node scripts/preview-server.js
+cd tauri && npm run preview
 ```
 
-- Electron 版渲染层：`http://localhost:5178/_preview.html`
-- Tauri 版渲染层：`http://localhost:5178/t/_preview.html`
-
-支持的参数：
+然后打开 `http://localhost:5178/_preview.html`，支持这些参数：
 
 | 参数 | 作用 |
 | --- | --- |
@@ -112,7 +95,7 @@ cd tauri && npx tauri build --target universal-apple-darwin --bundles dmg,app
 git tag v1.0.0 && git push origin v1.0.0
 ```
 
-应急路径：Electron 版可以在 macOS 上直接打出 Windows 安装包（`npm run dist:win`）。
+图标由 `scripts/make-icon.js` 纯代码生成（手写 PNG 编码器，不引入任何图形依赖），`npm run icon` 会顺带调 `tauri icon` 转出各平台尺寸。
 
 ## 踩过的坑（都在代码注释里标了）
 
@@ -137,11 +120,12 @@ git tag v1.0.0 && git push origin v1.0.0
 ## 目录
 
 ```
-tauri/src-tauri/src/main.rs      Tauri 主进程：计时、托盘、截图、浮层窗口管理
-tauri/src-tauri/src/platform.rs  macOS 原生部分：窗口层级、录屏权限
-tauri/ui/                        渲染层（bridge.js 把 window.api 映射到 Tauri IPC）
-src/                             Electron 版（备用），main / preload / renderer
-scripts/make-icon.js             图标生成（手写 PNG 编码器，无图形依赖）
-scripts/preview-server.js        动画调试服务器
-.github/workflows/build.yml      云端构建 Windows + macOS 安装包
+tauri/src-tauri/src/main.rs           主进程：计时、托盘、截图、浮层窗口管理
+tauri/src-tauri/src/platform.rs       macOS 原生部分：窗口层级、录屏权限
+tauri/src-tauri/capabilities/         Tauri ACL 权限声明（漏了它前端收不到事件）
+tauri/ui/                             渲染层（bridge.js 把 window.api 映射到 Tauri IPC）
+tauri/ui/_preview.html                动画调试页，配合 npm run preview
+scripts/make-icon.js                  图标生成（手写 PNG 编码器，无图形依赖）
+scripts/preview-server.js             动画调试服务器
+.github/workflows/build.yml           云端构建 Windows + macOS 安装包
 ```

@@ -812,8 +812,10 @@ window.api.onBoomInit(async (p) => {
   // 到引爆那一刻才切成画布里的截图，内容跳变被爆闪盖住。
   hasShot = false;
   window.api.onBoomShot(async (src) => {
-    // 已经炸开之后才送到就不要了，中途切进来会看着像跳帧
-    if (t0 >= 0 && performance.now() - t0 >= boomAt) return;
+    // 迟到的截图要不要收：爆炸后 0.12 秒内爆闪仍然很亮，足以盖住内容跳变，
+    // 所以这段时间还能收；再晚就会看着像跳帧，宁可走降级效果。
+    // （抓屏耗时有波动，实测 0.41~0.73 秒，而飞入只有 0.9 秒，余量不算宽裕）
+    if (t0 >= 0 && performance.now() - t0 >= boomAt + 120) return;
     shotEl.src = src;
     try {
       await (shotEl.decode ? shotEl.decode() : Promise.resolve());

@@ -1,0 +1,6 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "boom-preview", "runtimeExecutable": "node", "runtimeArgs": ["scripts/preview-server.js"], "port": 5178 }
+  ]
+}

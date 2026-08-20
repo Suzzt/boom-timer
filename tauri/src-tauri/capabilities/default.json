@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "控制台与爆炸浮层所需的权限。缺了这个文件，Tauri 的 ACL 会默认拒绝 event:listen，界面就收不到任何状态更新。",
+  "windows": ["main", "boom-*"],
+  "permissions": ["core:default"]
+}

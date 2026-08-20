@@ -1,0 +1,15 @@
+# 依赖
+node_modules/
+
+# 构建产物
+release/
+dist/
+tauri/src-tauri/target/
+tauri/src-tauri/gen/schemas/
+
+# 生成的图标（由 scripts/make-icon.js 产出）
+build/icon.png
+
+# 系统垃圾
+.DS_Store
+*.log

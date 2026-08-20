@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>boom preview</title>
+  <link rel="stylesheet" href="boom.css" />
+  <style>
+    body { background: #12151b; }
+    /* 预览时固定舞台尺寸，避免面板缩放干扰截图 */
+    #stage { inset: auto; left: 0; top: 0; width: 1280px; height: 720px; }
+    #fakedesk { width: 1280px; height: 720px; inset: auto; left: 0; top: 0; }
+    #fakedesk {
+      position: absolute; inset: 0; z-index: -1;
+      background:
+        linear-gradient(135deg, #2b3a55 0%, #1b2233 100%);
+      font-family: -apple-system, "PingFang SC", sans-serif;
+      color: #cfd8e6; padding: 60px; font-size: 15px; line-height: 2;
+    }
+    #bar { position:absolute; inset:0 0 auto 0; height:34px; background:#0f141d; }
+  </style>
+</head>
+<body>
+  <div id="fakedesk">
+    <div id="bar"></div>
+    <div style="margin-top:40px">
+      <b style="font-size:22px">季度复盘.docx</b><br>
+      2026 Q3 目标达成情况分析<br>
+      · 渠道 A 转化率同比提升 12%<br>
+      · 渠道 B 投放 ROI 待优化<br>
+      · 下一步：重排预算模型，补齐留存看板<br>
+      ————————————————<br>
+      TODO: 周五前给到王总初稿
+    </div>
+  </div>
+  <div id="stage">
+    <img id="shot" alt="" />
+    <div id="dim"></div>
+    <canvas id="fx"></canvas>
+    <div id="flash"></div>
+    <div id="msg"><div id="msg-emoji">💥</div><div id="msg-text"></div></div>
+  </div>
+  <script>
+    // 用一张 SVG 假桌面当作「屏幕快照」，模拟真实运行时的震动素材
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800">
+      <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#2b3a55"/><stop offset="1" stop-color="#1b2233"/>
+      </linearGradient></defs>
+      <rect width="1280" height="800" fill="url(#g)"/>
+      <rect width="1280" height="34" fill="#0f141d"/>
+      <g fill="#cfd8e6" font-family="sans-serif">
+        <text x="60" y="140" font-size="30" font-weight="bold">季度复盘.docx</text>
+        <text x="60" y="196" font-size="19">2026 Q3 目标达成情况分析</text>
+        <text x="60" y="236" font-size="19">· 渠道 A 转化率同比提升 12%</text>
+        <text x="60" y="276" font-size="19">· 渠道 B 投放 ROI 待优化</text>
+        <text x="60" y="316" font-size="19">· 下一步：重排预算模型，补齐留存看板</text>
+        <text x="60" y="380" font-size="19">TODO: 周五前给到王总初稿</text>
+      </g>
+    </svg>`;
+    const shot = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svg)));
+
+    const q = new URLSearchParams(location.search);
+    // 调试：?slow=K 把动画时间轴放慢 K 倍，方便逐帧截图检查
+    const slow = parseFloat(q.get('slow') || '1');
+    if (slow > 1) {
+      const raf = window.requestAnimationFrame.bind(window);
+      let base = null;
+      window.requestAnimationFrame = (cb) => raf((t) => {
+        if (base === null) base = t;
+        cb(base + (t - base) / slow);
+      });
+    }
+
+    // 调试：?manual=1 手动驱动时间轴，配合 window.__seek(ms) 逐帧截图
+    if (q.get('manual')) {
+      let pending = null;
+      window.requestAnimationFrame = (cb) => { pending = cb; return 1; };
+      window.__seek = (T) => {
+        let t = 0;
+        while (t <= T && pending) { const cb = pending; pending = null; cb(t); t += 16.6; }
+        return t;
+      };
+    }
+
+    let initCb = null;
+    window.api = {
+      onBoomInit: (cb) => { initCb = cb; },
+      boomReady: () => {
+        (q.get('manual') ? ((f) => f()) : ((f) => setTimeout(f, 60)))(() => initCb({
+          shot: q.get('noshot') ? null : shot,
+          intensity: q.get('i') || 'normal',
+          sound: false, volume: 0.7,
+          fuse: q.get('fuse') !== '0',
+          text: '起来动一动！',
+        }));
+      },
+      boomDone: () => { document.title = 'done'; },
+    };
+  </script>
+  <script src="boom.js"></script>
+  <script>
+    // ?at=ms 页面加载后自动跳到指定时刻并停住，方便截图
+    if (q.get('manual') && q.get('at')) {
+      const im = document.getElementById('shot');
+      const go = () => setTimeout(() => {
+        window.__seek(Number(q.get('at')));
+        // 冻结这一帧：把 canvas 换成静态图，避免截图时的 resize 把画面清空
+        const c = document.getElementById('fx');
+        const frozen = new Image();
+        frozen.src = c.toDataURL();
+        frozen.style.cssText = 'position:absolute;inset:0;width:100%;height:100%';
+        c.replaceWith(frozen);
+      }, 900);
+      if (!im.src || im.complete) go(); else im.onload = go;
+    }
+  </script>
+</body>
+</html>

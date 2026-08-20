@@ -401,10 +401,12 @@ fn sweep_shots(app: &AppHandle) {
 #[tauri::command]
 fn detonate(app: AppHandle) {
     let handle = app.clone();
-    std::thread::spawn(move || boom(handle));
+    // 手动引爆（试炸 / 托盘「立即引爆」）不碰计时器：
+    // 「爆完自动重新计时」只针对倒计时到点的那一次
+    std::thread::spawn(move || boom(handle, false));
 }
 
-fn boom(app: AppHandle) {
+fn boom(app: AppHandle, from_timer: bool) {
     {
         let st = app.state::<Mutex<AppState>>();
         let mut s = st.lock().unwrap();
@@ -455,16 +457,26 @@ fn boom(app: AppHandle) {
         st.lock().unwrap().booming = false;
     }
 
-    let looping = {
-        let st = app.state::<Mutex<AppState>>();
-        let s = st.lock().unwrap();
-        s.settings.loop_on
-    };
-    if looping {
-        start_timer(app.clone(), None);
-    } else {
-        reset_timer(app.clone());
+    // 只有「倒计时到点」这一次才决定要不要接着计时。
+    // 手动引爆时计时器保持原样 —— 本来在跑的继续跑，本来暂停的仍然暂停。
+    if from_timer {
+        let looping = {
+            let st = app.state::<Mutex<AppState>>();
+            let s = st.lock().unwrap();
+            s.settings.loop_on
+        };
+        if looping {
+            start_timer(app.clone(), None);
+        } else {
+            reset_timer(app.clone());
+        }
     }
+    dbg_log(&app, &format!(
+        "引爆结束 来源={} 计时器 running={} remaining={}ms",
+        if from_timer { "倒计时" } else { "手动" },
+        snapshot(&app).running,
+        snapshot(&app).remaining_ms
+    ));
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -799,8 +811,9 @@ fn main() {
                 };
                 broadcast(&tick);
                 if fire {
+                    dbg_log(&tick, "计时到点，触发引爆");
                     let h = tick.clone();
-                    std::thread::spawn(move || boom(h));
+                    std::thread::spawn(move || boom(h, true));
                 }
             });
 
@@ -808,7 +821,8 @@ fn main() {
                 let h = handle.clone();
                 std::thread::spawn(move || {
                     std::thread::sleep(Duration::from_millis(ms.parse().unwrap_or(4000)));
-                    boom(h);
+                    // 走和「试炸」按钮相同的路径
+                    detonate(h);
                 });
             }
 

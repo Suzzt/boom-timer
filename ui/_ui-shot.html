@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>ui shot</title>
+  <style>body { margin: 0; background: #222; font-family: sans-serif; color: #888; padding: 20px; }</style>
+</head>
+<body>
+  <p id="log">准备中…</p>
+  <script>
+    // 把控制台界面渲染成图片（SVG foreignObject → canvas → POST /save），
+    // 不依赖任何桌面截图，纯浏览器内完成。
+    const log = (m) => (document.getElementById('log').textContent = m);
+
+    (async () => {
+      const W = 420, H = 906, SCALE = 2;
+      let css = await (await fetch('index.css')).text();
+      const html = await (await fetch('index.html')).text();
+
+      // foreignObject 里没有 body / :root，把选择器改到容器上
+      css = css.replace(/:root/g, '.app').replace(/\bbody\s*\{/, '.app {');
+
+      const body = html
+        .replace(/<script[\s\S]*?<\/script>/g, '')
+        .match(/<body>([\s\S]*?)<\/body>/)[1];
+
+      const host = document.createElement('div');
+      host.setAttribute('class', 'app');
+      host.setAttribute('style', `width:${W}px;height:${H}px;overflow:hidden`);
+      host.innerHTML = body;
+
+      // 摆成「刚打开、45 分钟待命」的样子
+      host.querySelector('[data-min="45"]').classList.add('on');
+      host.querySelector('#intensity [data-v="normal"]').classList.add('on');
+      host.querySelectorAll('.switch input').forEach((c) => c.setAttribute('checked', 'checked'));
+      host.querySelector('#volume').setAttribute('value', '0.7');
+      host.querySelector('#min').setAttribute('value', '45');
+      const prog = host.querySelector('#prog');
+      prog.setAttribute('stroke-dasharray', '553');
+      prog.setAttribute('stroke-dashoffset', '0');
+
+      const xhtml = new XMLSerializer().serializeToString(host);
+      const svg =
+        `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}">` +
+        `<foreignObject width="100%" height="100%">` +
+        `<div xmlns="http://www.w3.org/1999/xhtml"><style>${css}</style>${xhtml}</div>` +
+        `</foreignObject></svg>`;
+
+      const img = new Image();
+      img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+      await new Promise((ok, no) => { img.onload = ok; img.onerror = () => no(new Error('SVG 渲染失败')); });
+
+      const cv = document.createElement('canvas');
+      cv.width = W * SCALE; cv.height = H * SCALE;
+      const c = cv.getContext('2d');
+      c.fillStyle = '#0e1116';
+      c.fillRect(0, 0, cv.width, cv.height);
+      c.drawImage(img, 0, 0, cv.width, cv.height);
+
+      await fetch('/save?name=shot-ui', { method: 'POST', body: cv.toDataURL('image/png') });
+      log('已导出 shot-ui.png');
+      document.title = 'saved';
+    })().catch((e) => { log('失败: ' + e.message); document.title = 'failed'; });
+  </script>
+</body>
+</html>

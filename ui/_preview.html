@@ -112,11 +112,51 @@
   </script>
   <script src="boom.js"></script>
   <script>
+    // 把当前这一帧合成成一张完整图片存到 assets/（画布 + 仍可见的 DOM 截图层 + 文案）
+    window.__export = async (name, w = 1040, h = 585) => {
+      const big = document.createElement('canvas');
+      big.width = 1280; big.height = 720;
+      const c = big.getContext('2d');
+      const shot = document.getElementById('shot');
+      if (shot && shot.src && parseFloat(getComputedStyle(shot).opacity || '0') > 0.01) {
+        c.drawImage(shot, 0, 0, 1280, 720);
+      }
+      const fx = document.getElementById('fx');
+      if (fx && fx.tagName === 'CANVAS') c.drawImage(fx, 0, 0, 1280, 720);
+      const msg = document.getElementById('msg');
+      const op = parseFloat(msg.style.opacity || '0');
+      if (op > 0.05) {
+        c.save();
+        c.globalAlpha = Math.min(1, op);
+        c.textAlign = 'center';
+        c.shadowColor = 'rgba(255,110,20,.95)';
+        c.shadowBlur = 26;
+        c.font = '92px "Apple Color Emoji", sans-serif';
+        c.fillText('💥', 640, 330);
+        c.font = '800 40px -apple-system, "PingFang SC", sans-serif';
+        c.fillStyle = '#fff';
+        c.fillText(document.getElementById('msg-text').textContent || '', 640, 412);
+        c.restore();
+      }
+      const out = document.createElement('canvas');
+      out.width = w; out.height = h;
+      const oc = out.getContext('2d');
+      oc.imageSmoothingQuality = 'high';
+      oc.drawImage(big, 0, 0, w, h);
+      await fetch('/save?name=' + encodeURIComponent(name), {
+        method: 'POST', body: out.toDataURL('image/png'),
+      });
+      document.title = 'saved:' + name;
+    };
+  </script>
+  <script>
     // ?at=ms 页面加载后自动跳到指定时刻并停住，方便截图
     if (q.get('manual') && q.get('at')) {
       const im = document.getElementById('shot');
       const go = () => setTimeout(async () => {
         await window.__seek(Number(q.get('at')));
+        // ?save=名字 —— 定格后先把这一帧导出成图片（要在冻结画布之前做）
+        if (q.get('save')) await window.__export(q.get('save'));
         // 冻结这一帧：把 canvas 换成静态图，避免截图时的 resize 把画面清空
         const c = document.getElementById('fx');
         const frozen = new Image();

@@ -7,6 +7,25 @@ const types = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascrip
 
 http.createServer((req, res) => {
   const urlPath = decodeURIComponent(req.url.split('?')[0]);
+
+  // POST /save?name=xxx —— 预览页把合成好的帧存成图片，用于 README 配图
+  if (req.method === 'POST' && urlPath === '/save') {
+    const name = (new URL(req.url, 'http://x').searchParams.get('name') || 'frame')
+      .replace(/[^\w.-]/g, '');
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      const m = /^data:image\/(png|jpeg);base64,(.+)$/s.exec(body);
+      if (!m) { res.writeHead(400); return res.end('bad'); }
+      const dir = path.join(__dirname, '..', 'assets');
+      fs.mkdirSync(dir, { recursive: true });
+      const file = path.join(dir, `${name}.${m[1] === 'jpeg' ? 'jpg' : 'png'}`);
+      fs.writeFileSync(file, Buffer.from(m[2], 'base64'));
+      console.log('已保存', file, (fs.statSync(file).size / 1024).toFixed(0) + ' KB');
+      res.writeHead(200); res.end('ok');
+    });
+    return;
+  }
   const f = path.join(root, urlPath);
   fs.readFile(f, (e, d) => {
     if (e) { res.writeHead(404); return res.end('nope'); }

@@ -56,13 +56,13 @@ macOS 与 Windows 双端。
 ## 开发
 
 ```bash
-cd tauri && npm install && npm run dev
+npm install && npm run dev
 ```
 
 单独调爆炸动画（不用起客户端，浏览器里逐帧看）：
 
 ```bash
-cd tauri && npm run preview
+npm run preview
 ```
 
 然后打开 `http://localhost:5178/_preview.html`，支持这些参数：
@@ -86,7 +86,7 @@ BOOM_TEST=3000 ./src-tauri/target/debug/boom-timer
 macOS（在 macOS 上）：
 
 ```bash
-cd tauri && npx tauri build --target universal-apple-darwin --bundles dmg,app
+npx tauri build --target universal-apple-darwin --bundles dmg,app
 ```
 
 **Windows 包必须在 Windows 上构建**——Rust 编译到 Windows 需要 MSVC 工具链，Tauri 的 WebView2 绑定和 NSIS 打包器也要求 Windows 宿主。`.github/workflows/build.yml` 已经配好：推一个 `v*` tag（或在 Actions 页面手动触发），云端三台机器（Windows / macOS Intel / macOS Apple Silicon）各自构建，安装包自动挂到 Release 上。单次全平台构建约 8 分钟。
@@ -120,11 +120,11 @@ git tag v1.0.0 && git push origin v1.0.0
 ## 目录
 
 ```
-tauri/src-tauri/src/main.rs           主进程：计时、托盘、截图、浮层窗口管理
-tauri/src-tauri/src/platform.rs       macOS 原生部分：窗口层级、录屏权限
-tauri/src-tauri/capabilities/         Tauri ACL 权限声明（漏了它前端收不到事件）
-tauri/ui/                             渲染层（bridge.js 把 window.api 映射到 Tauri IPC）
-tauri/ui/_preview.html                动画调试页，配合 npm run preview
+src-tauri/src/main.rs           主进程：计时、托盘、截图、浮层窗口管理
+src-tauri/src/platform.rs       macOS 原生部分：窗口层级、录屏权限
+src-tauri/capabilities/         Tauri ACL 权限声明（漏了它前端收不到事件）
+ui/                             渲染层（bridge.js 把 window.api 映射到 Tauri IPC）
+ui/_preview.html                动画调试页，配合 npm run preview
 scripts/make-icon.js                  图标生成（手写 PNG 编码器，无图形依赖）
 scripts/preview-server.js             动画调试服务器
 .github/workflows/build.yml           云端构建 Windows + macOS 安装包

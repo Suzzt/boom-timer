@@ -2,7 +2,7 @@
 // 打开 http://localhost:5178/_preview.html
 const http = require('http'), fs = require('fs'), path = require('path');
 
-const root = path.join(__dirname, '..', 'tauri', 'ui');
+const root = path.join(__dirname, '..', 'ui');
 const types = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript' };
 
 http.createServer((req, res) => {

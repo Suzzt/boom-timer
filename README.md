@@ -4,6 +4,19 @@
 
 macOS 与 Windows 双端。
 
+## 下载
+
+[**→ 前往 Releases 下载**](https://github.com/Suzzt/boom-timer/releases/latest)
+
+| 平台 | 文件 | 体积 |
+| --- | --- | --- |
+| macOS Apple Silicon | `BoomTimer_1.0.0_aarch64.dmg` | 2.5 MB |
+| macOS Intel | `BoomTimer_1.0.0_x64.dmg` | 2.6 MB |
+| Windows 安装版 | `BoomTimer_1.0.0_x64-setup.exe` | 1.4 MB |
+| Windows MSI | `BoomTimer_1.0.0_x64_en-US.msi` | 1.9 MB |
+
+应用未做商业签名（只有 ad-hoc 签名），首次打开时：macOS 需「右键 → 打开」，Windows 点「更多信息 → 仍要运行」。
+
 ---
 
 ## 效果是怎么做出来的
@@ -27,7 +40,8 @@ macOS 与 Windows 双端。
 
 | | `tauri/`（主线） | `src/`（Electron，备用） |
 | --- | --- | --- |
-| 安装包 | **2.6 MB** | 95 MB |
+| macOS 安装包 | **2.6 MB** | 95 MB |
+| Windows 安装包 | **1.4 MB** | 91 MB |
 | 装完占用 | **5.5 MB** | 230 MB |
 | 原理 | 用系统自带 WebView | 自带一整套 Chromium |
 | Windows 包 | 需要在 Windows 上构建（见 CI） | macOS 上就能直接打 |
@@ -92,7 +106,7 @@ macOS（在 macOS 上）：
 cd tauri && npx tauri build --target universal-apple-darwin --bundles dmg,app
 ```
 
-**Windows 包必须在 Windows 上构建**——Rust 编译到 Windows 需要 MSVC 工具链，Tauri 的 WebView2 绑定和 NSIS 打包器也要求 Windows 宿主。仓库里的 `.github/workflows/build.yml` 已经配好：推一个 `v*` tag（或在 Actions 页面手动触发），云端的 Windows 和 macOS 机器会各自构建，安装包挂到 Release 上。
+**Windows 包必须在 Windows 上构建**——Rust 编译到 Windows 需要 MSVC 工具链，Tauri 的 WebView2 绑定和 NSIS 打包器也要求 Windows 宿主。`.github/workflows/build.yml` 已经配好：推一个 `v*` tag（或在 Actions 页面手动触发），云端三台机器（Windows / macOS Intel / macOS Apple Silicon）各自构建，安装包自动挂到 Release 上。单次全平台构建约 8 分钟。
 
 ```bash
 git tag v1.0.0 && git push origin v1.0.0

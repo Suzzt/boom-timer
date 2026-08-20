@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><title>testing</title></head>
+<body>
+<pre id="out">running…</pre>
+<script>
+// 验证音量滑块的节流：模拟一次真实拖动（50 次 input + 1 次 change），
+// 数一数到底发生了几次 setSettings（写盘 + IPC）。
+const calls = [];
+let stateCb = null;
+window.api = {
+  getState: () => Promise.resolve(fakeState()),
+  onState: (cb) => { stateCb = cb; },
+  start: () => {}, pause: () => {}, reset: () => {}, boomNow: () => {},
+  setSettings: (p) => calls.push(p),
+  openScreenPermission: () => {}, restartApp: () => {}, log: () => {},
+};
+window.BoomSound = { unlock() {}, play() {} };
+window.__TAURI__ = { event: { listen: () => Promise.resolve(() => {}) } };
+function fakeState() {
+  return { running: false, remainingMs: 2700000, totalMs: 2700000,
+    screenPermission: 'granted',
+    settings: { minutes: 45, loop: true, sound: true, volume: 0.7,
+      intensity: 'normal', fuse: true, allScreens: false, messages: ['x'] } };
+}
+
+(async () => {
+  const html = await (await fetch('index.html')).text();
+  document.body.insertAdjacentHTML('afterbegin',
+    html.replace(/<script[\s\S]*?<\/script>/g, '').match(/<body>([\s\S]*?)<\/body>/)[1]);
+  await new Promise((r) => { const s = document.createElement('script'); s.src = 'index.js'; s.onload = r; document.body.appendChild(s); });
+  await new Promise((r) => setTimeout(r, 50));
+
+  const slider = document.getElementById('volume');
+  const log = [];
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // 一次拖动 = 连续 40 个 input 事件（同步连发，模拟最密集的情况）
+  for (let i = 0; i < 40; i++) {
+    slider.value = String(0.30 + i * 0.015);
+    slider.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  log.push(`① 连发 40 次 input，立刻统计 setSettings = ${calls.length} 次（节流生效应为 0）`);
+
+  // 拖动过程中来一次「旧值」状态广播，模拟每 250ms 的计时 tick
+  const stale = fakeState();
+  stale.settings.volume = 0.7;
+  if (stateCb) stateCb(stale);
+  log.push(`② 拖动中收到旧值广播，滑块 = ${slider.value}（应保持 0.885，不被顶回 0.7）`);
+
+  // 松手
+  slider.dispatchEvent(new Event('change', { bubbles: true }));
+  log.push(`③ 松手后 setSettings = ${calls.length} 次，写入音量 = ${calls.length ? calls[calls.length - 1].volume : 'n/a'}`);
+
+  // 等过保护窗口，广播应恢复同步能力
+  await wait(600);
+  if (stateCb) stateCb(stale);
+  log.push(`④ 保护窗口过后再广播，滑块 = ${slider.value}（应同步为 0.7）`);
+  log.push(`结论：40 次拖动事件总共只产生 ${calls.length} 次写盘`);
+
+  document.getElementById('out').textContent = log.join('\n');
+  document.title = 'done';
+})().catch((e) => { document.getElementById('out').textContent = '失败: ' + e.message; document.title = 'failed'; });
+</script>
+</body></html>

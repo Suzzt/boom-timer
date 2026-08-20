@@ -642,13 +642,24 @@ fn fmt_ms(ms: i64) -> String {
     format!("{:02}:{:02}", s / 60, s % 60)
 }
 
+/// 托盘提示的上一次内容。状态每 250ms 广播一次，但提示只精确到秒，
+/// 没必要每次都去调一次原生 API。
+static LAST_TIP: Mutex<Option<String>> = Mutex::new(None);
+
 fn update_tray(app: &AppHandle, state: &StatePayload) {
+    let tip = if state.running {
+        format!("BoomTimer — {}", fmt_ms(state.remaining_ms))
+    } else {
+        "BoomTimer — 已暂停".to_string()
+    };
+    {
+        let mut last = LAST_TIP.lock().unwrap();
+        if last.as_deref() == Some(tip.as_str()) {
+            return;
+        }
+        *last = Some(tip.clone());
+    }
     if let Some(tray) = app.tray_by_id("main") {
-        let tip = if state.running {
-            format!("BoomTimer — {}", fmt_ms(state.remaining_ms))
-        } else {
-            "BoomTimer — 已暂停".to_string()
-        };
         let _ = tray.set_tooltip(Some(tip));
     }
 }

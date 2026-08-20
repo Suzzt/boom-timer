@@ -5,6 +5,11 @@ const CIRC = 2 * Math.PI * 88;
 
 let state = null;
 let editing = false;
+// 滑块最近一次被拖动的时刻。250ms 的状态广播不能在用户还在拖的时候
+// 把值改回去 —— 分钟输入框用 focus/blur 守卫，滑块用时间窗更稳（拖动
+// 过程中的 focus/pointer 事件在各引擎上不完全一致）。
+let volTouchedAt = 0;
+let volTimer = null;
 
 function fmt(ms) {
   const total = Math.max(0, Math.round(ms / 1000));
@@ -29,7 +34,7 @@ function render(s) {
   $('sound').checked = !!st.sound;
   $('fuse').checked = !!st.fuse;
   $('allScreens').checked = !!st.allScreens;
-  $('volume').value = String(st.volume);
+  if (Date.now() - volTouchedAt > 400) $('volume').value = String(st.volume);
 
   for (const b of document.querySelectorAll('#presets button')) {
     b.classList.toggle('on', Number(b.dataset.min) === Number(st.minutes));
@@ -78,7 +83,22 @@ $('loop').onchange = (e) => window.api.setSettings({ loop: e.target.checked });
 $('sound').onchange = (e) => window.api.setSettings({ sound: e.target.checked });
 $('fuse').onchange = (e) => window.api.setSettings({ fuse: e.target.checked });
 $('allScreens').onchange = (e) => window.api.setSettings({ allScreens: e.target.checked });
-$('volume').oninput = (e) => window.api.setSettings({ volume: Number(e.target.value) });
+// 拖动时不要每个像素都走一遍 IPC + 同步写盘 + 原生托盘更新：
+// 本地立刻回显保证跟手，落盘最多每 100ms 一次，松手时补一次最终值。
+$('volume').oninput = (e) => {
+  volTouchedAt = Date.now();
+  if (state) state.settings.volume = Number(e.target.value);
+  if (volTimer) return;
+  volTimer = setTimeout(() => {
+    volTimer = null;
+    window.api.setSettings({ volume: Number($('volume').value) });
+  }, 100);
+};
+$('volume').onchange = () => {
+  if (volTimer) { clearTimeout(volTimer); volTimer = null; }
+  volTouchedAt = Date.now();
+  window.api.setSettings({ volume: Number($('volume').value) });
+};
 $('perm-btn').onclick = () => window.api.openScreenPermission();
 $('restart-btn').onclick = () => window.api.restartApp();
 

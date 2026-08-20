@@ -132,6 +132,7 @@ src-tauri/capabilities/         Tauri ACL 权限声明
 ui/                             渲染层（bridge.js 把 window.api 映射到 Tauri IPC）
 ui/_preview.html                动画调试页，配合 npm run preview
 ui/_ui-shot.html                把控制台界面导出成图片（README 配图用）
+ui/_test-volume.html            音量滑块节流的回归测试（浏览器里打开即跑）
 scripts/make-icon.js            图标生成
 scripts/preview-server.js       动画调试服务器（含 /save 导图端点）
 .github/workflows/build.yml     云端构建 Windows + macOS 安装包
@@ -186,6 +187,20 @@ git tag v1.0.0 && git push origin v1.0.0
 云端三台机器（Windows / macOS Intel / macOS Apple Silicon）各自构建，安装包自动挂到 Release。单次全平台约 8 分钟。
 
 > workflow 里写了 `if-no-files-found: warn`，意味着**产物为空也算成功**。每次发布后建议把安装包下载下来核对一下真实体积，别被绿勾骗了。
+
+## 别让高频输入直接落盘
+
+音量滑块最初写的是 `oninput` → `setSettings`，而 `setSettings` 会同步写盘 +
+更新原生托盘 + 广播状态。拖动时每秒触发几十次，等于每秒几十次写盘；同时
+每 250ms 的状态广播又会把滑块的值改回去，和手指打架（分钟输入框有
+`editing` 守卫，滑块当初漏了）。
+
+改成本地立刻回显 + 落盘节流到 100ms + 松手时补最终值，并用 400ms 的时间窗
+挡住广播回写。`ui/_test-volume.html` 是对应的回归测试：连发 40 次 input，
+断言只产生 1 次写盘、且拖动中不被旧值顶回。
+
+同类问题还有托盘提示 —— 状态每 250ms 广播一次，但提示只精确到秒，
+现在内容没变就不调原生 API。
 
 ## 已知限制
 

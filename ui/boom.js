@@ -3,9 +3,9 @@
 /* 爆炸浮层：引线 → 爆闪 → 冲击波 → 火球/火星/碎片/浓烟 → 屏幕震动 + 裂纹 → 提示文案 */
 
 const PRESET = {
-  gentle: { amp: 15, shake: 520, count: 0.6, radius: 0.85, cracks: 9 },
-  normal: { amp: 28, shake: 720, count: 1.0, radius: 1.0, cracks: 13 },
-  nuke:   { amp: 48, shake: 1000, count: 1.7, radius: 1.25, cracks: 18 },
+  gentle: { amp: 16, shake: 560, count: 0.6, radius: 0.85, cracks: 11 },
+  normal: { amp: 32, shake: 780, count: 1.0, radius: 1.05, cracks: 17 },
+  nuke:   { amp: 56, shake: 1100, count: 1.8, radius: 1.35, cracks: 24 },
 };
 
 const stage = document.getElementById('stage');
@@ -34,16 +34,24 @@ let fireballs = [];
 // 而实测飞入阶段的顿挫率（27%）是引爆后（8%）的三倍多。
 // 24 挡覆盖 0.9 秒，自转每挡只跳 6°，看不出来；按需构建，避免在起爆前一次性卡一下。
 const BOMB_STEPS = 24;
-const BOMB_PAD = 1.6;
-const BOMB_SPRITE_MAX = 448;
+// 精灵留白必须按实际内容算：引信跟着炸弹自转，火花会被甩到球心侧上方
+// 2~3 个半径远。给个固定的方形留白要么裁掉光晕（出现硬边方块），要么浪费大量像素。
+const BOMB_SPRITE_MAX = 640;
 let bombSprites = null;
 let baking = false;
 
 let FUSE_MS = 900;
 const TAIL_MS = 2500;
 let t0 = -1, boomAt = 0, finished = false;
+// 动画自己的时钟（毫秒）。判断「截图来晚了没」要用它而不是 performance.now()：
+// 调试用的定格模式会自己驱动时间轴，两个时钟对不上就会把截图误判成迟到。
+let animT = -1;
 
 // ---------------------------------------------------------------- helpers
+
+// 诊断日志：宿主没提供 log 接口时安静跳过 —— 不能因为少一个日志接口
+// 就让整个动画初始化抛异常（预览页就这么白过一次）
+const dlog = (m) => { try { window.api.log(m); } catch { /* 忽略 */ } };
 
 const rand = (a, b) => a + Math.random() * (b - a);
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
@@ -84,22 +92,58 @@ function spawn() {
   const base = Math.min(W, H);
 
   // 火星
-  for (let i = 0; i < Math.round(220 * k); i++) {
+  for (let i = 0; i < Math.round(300 * k); i++) {
     const a = Math.random() * Math.PI * 2;
-    const sp = rand(0.15, 1.0) ** 1.7 * base * rand(1.6, 3.4);
+    const sp = rand(0.15, 1.0) ** 1.7 * base * rand(2.0, 4.4);
     sparks.push({
       x: CX, y: CY, px: CX, py: CY,
       vx: Math.cos(a) * sp, vy: Math.sin(a) * sp * 0.92,
       life: 0, max: rand(0.45, 1.35),
       w: rand(1.2, 3.4),
       hue: rand(12, 52),
+      wait: 0,
     });
   }
 
-  // 燃烧碎屑
-  for (let i = 0; i < Math.round(46 * k); i++) {
+  // 一撮甩得极远的流星，负责把「炸开的范围」撑出去
+  for (let i = 0; i < Math.round(18 * k); i++) {
     const a = Math.random() * Math.PI * 2;
-    const sp = rand(0.25, 1) * base * rand(0.9, 2.1);
+    const sp = base * rand(4.5, 7.0);
+    sparks.push({
+      x: CX, y: CY, px: CX, py: CY,
+      vx: Math.cos(a) * sp, vy: Math.sin(a) * sp * 0.9,
+      life: 0, max: rand(0.5, 0.9),
+      w: rand(2.4, 4.6),
+      hue: rand(28, 52),
+      wait: 0,
+    });
+  }
+
+  // 二次爆的火星：延迟点着，位置偏离中心，做出「连环炸」的层次
+  for (const [wait, ox, oy, n] of [
+    [0.085, -0.16, -0.08, 70],
+    [0.19, 0.19, 0.07, 55],
+  ]) {
+    const sx = CX + base * ox;
+    const sy = CY + base * oy;
+    for (let i = 0; i < Math.round(n * k); i++) {
+      const a = Math.random() * Math.PI * 2;
+      const sp = rand(0.2, 1.0) ** 1.6 * base * rand(1.4, 3.0);
+      sparks.push({
+        x: sx, y: sy, px: sx, py: sy,
+        vx: Math.cos(a) * sp, vy: Math.sin(a) * sp * 0.92,
+        life: 0, max: rand(0.4, 1.1),
+        w: rand(1.2, 3.0),
+        hue: rand(12, 48),
+        wait,
+      });
+    }
+  }
+
+  // 燃烧碎屑
+  for (let i = 0; i < Math.round(64 * k); i++) {
+    const a = Math.random() * Math.PI * 2;
+    const sp = rand(0.25, 1) * base * rand(1.2, 2.8);
     debris.push({
       x: CX, y: CY,
       vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - rand(60, 260),
@@ -142,10 +186,22 @@ function spawn() {
       speed: rand(0.85, 1.25),
     });
   }
+  // 二次爆的火球：偏离中心、延迟点着，和上面的延迟火星、补闪对齐
+  for (const [delay, ang, dist, rr] of [
+    [0.085, Math.PI * 1.12, 0.42, 0.5],
+    [0.19, Math.PI * 0.18, 0.5, 0.4],
+  ]) {
+    fireballs.push({
+      a: ang, d: dist,
+      r: rr * MAXR * 0.5 * cfg.radius,
+      delay, speed: 0.8,
+    });
+  }
 
   shockwaves = [
-    { delay: 0, dur: 0.72, w: 26, alpha: 0.95, reach: 1.15 },
-    { delay: 0.09, dur: 0.85, w: 10, alpha: 0.5, reach: 1.35 },
+    { delay: 0, dur: 0.62, w: 26, alpha: 0.9, reach: 1.2 },
+    { delay: 0.07, dur: 0.85, w: 12, alpha: 0.55, reach: 1.4 },
+    { delay: 0.19, dur: 0.8, w: 16, alpha: 0.45, reach: 1.25 },
   ];
 
   cracks = makeCracks();
@@ -336,30 +392,59 @@ function drawBombAt(u, alpha) {
 // 把某一挡的炸弹（含三段残影）烘焙进一张小画布。
 // 手法是临时把全局的 ctx / CX / CY 指到精灵画布上，直接复用 drawBombAt，
 // 避免为了预渲染再写一份绘制逻辑。
+// 算出某一挡的内容包围盒（以球心为原点，单位是半径 R）。
+// 内容 = 球体本身 + 暗halo(1.55R) + 引信火花（跟着自转被甩出去）。
+function bombExtent(u) {
+  let left = 1.6, right = 1.6, up = 1.6, down = 1.6;
+  // 三段残影的自转角度略有差异，取并集
+  for (const uu of [Math.max(0, u - 0.055), Math.max(0, u - 0.025), u]) {
+    const rot = (-0.85 + uu * 2.5) * 0.35;
+    const tipX = 0.67;            // 火花相对球心的位置（单位 R）
+    const tipY = -1.02 - 0.82;
+    const cos = Math.cos(rot), sin = Math.sin(rot);
+    const px = tipX * cos - tipY * sin;
+    const py = tipX * sin + tipY * cos;
+    const glow = 1.1;             // 火花光晕半径（含闪烁上限）
+    right = Math.max(right, px + glow);
+    left = Math.max(left, -(px - glow));
+    down = Math.max(down, py + glow);
+    up = Math.max(up, -(py - glow));
+  }
+  return { left: left + 0.1, right: right + 0.1, up: up + 0.1, down: down + 0.1 };
+}
+
 function bakeBomb(idx) {
   const u = idx / (BOMB_STEPS - 1);
   const savedCtx = ctx, savedCX = CX, savedCY = CY;
   baking = true;
   const { R } = bombGeom(u);
-  const want = Math.ceil(R * 2 * BOMB_PAD);
-  const size = Math.max(8, Math.min(BOMB_SPRITE_MAX, want));
-  const scale = size / Math.max(1, want);   // 超过上限时按比例缩小烘焙
+
+  const ext = bombExtent(u);
+  const wantW = R * (ext.left + ext.right);
+  const wantH = R * (ext.up + ext.down);
+  const cx = R * ext.left;
+  const cy = R * ext.up;
+
+  const scale = Math.min(1, BOMB_SPRITE_MAX / Math.max(wantW, wantH));
   const c = document.createElement('canvas');
-  c.width = size;
-  c.height = size;
+  c.width = Math.max(4, Math.ceil(wantW * scale));
+  c.height = Math.max(4, Math.ceil(wantH * scale));
   ctx = c.getContext('2d');
   ctx.scale(scale, scale);
-  CX = want / 2;
-  CY = want / 2;
+  CX = cx;
+  CY = cy;
+
   const blur = 0.35 + u * 0.65;
   drawBombAt(Math.max(0, u - 0.055), 0.1 * blur);
   drawBombAt(Math.max(0, u - 0.025), 0.2 * blur);
   drawBombAt(u, 1);
+
   ctx = savedCtx;
   CX = savedCX;
   CY = savedCY;
   baking = false;
-  return { canvas: c, half: want / 2 };
+  // 记下「这张图相对球心怎么摆」，绘制时按当前半径等比放大
+  return { canvas: c, R, w: wantW, h: wantH, cx, cy };
 }
 
 // 一次性把 24 挡全烘出来。绝不能等到动画跑起来再按需烘 ——
@@ -380,15 +465,8 @@ function drawBomb(u) {
   // 位置和缩放仍然每帧连续计算，只有外观（自转、高光、火花）按挡取
   const { R, x, y } = bombGeom(u);
   if (R < 0.5) return;
-  const { R: spR } = (() => {
-    baking = true;
-    const g = bombGeom(idx / (BOMB_STEPS - 1));
-    baking = false;
-    return g;
-  })();
-  const k = R / Math.max(0.001, spR);
-  const half = sp.half * k;
-  ctx.drawImage(sp.canvas, x - half, y - half, half * 2, half * 2);
+  const k = R / Math.max(0.001, sp.R);
+  ctx.drawImage(sp.canvas, x - sp.cx * k, y - sp.cy * k, sp.w * k, sp.h * k);
 }
 
 function drawShockwave(bt) {
@@ -488,6 +566,7 @@ function drawSparks(dt) {
   ctx.lineCap = 'round';
   for (let i = sparks.length - 1; i >= 0; i--) {
     const p = sparks[i];
+    if (p.wait > 0) { p.wait -= dt; continue; }   // 二次爆的火星还没到点
     p.life += dt;
     const u = p.life / p.max;
     if (u >= 1) { sparks.splice(i, 1); continue; }
@@ -552,7 +631,8 @@ function drawDebris(dt) {
 function drawCracks(bt) {
   const start = 0.045;
   if (bt < start) return;
-  const grow = clamp01((bt - start) / 0.2);
+  const grow = clamp01((bt - start) / 0.14);   // 裂得更快，才像「一下子崩开」
+  const hot = Math.max(0, 1 - (bt - start) / 0.3);
   const fadeStart = 1.55;
   const alpha = bt < fadeStart ? 1 : clamp01(1 - (bt - fadeStart) / 0.75);
   if (alpha <= 0) return;
@@ -577,6 +657,19 @@ function drawCracks(bt) {
     ctx.moveTo(c.pts[0].x, c.pts[0].y);
     for (let i = 1; i <= upto; i++) ctx.lineTo(c.pts[i].x, c.pts[i].y);
     ctx.stroke();
+
+    // 刚裂开的那 0.3 秒裂缝是烫的，像烧红的断口，之后冷却成玻璃白
+    if (hot > 0.01) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.strokeStyle = `rgba(255,${(170 + 60 * hot) | 0},${(60 + 40 * hot) | 0},${0.85 * hot * alpha})`;
+      ctx.lineWidth = c.width * 1.6;
+      ctx.beginPath();
+      ctx.moveTo(c.pts[0].x, c.pts[0].y);
+      for (let i = 1; i <= upto; i++) ctx.lineTo(c.pts[i].x, c.pts[i].y);
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 
   // 中心击碎点
@@ -609,6 +702,7 @@ function frame(now) {
 
   if (t0 < 0) t0 = now;
   const t = now - t0;
+  animT = t;
   const dt = Math.min(0.05, (now - (last || now)) / 1000);
   last = now;
 
@@ -649,11 +743,16 @@ function frame(now) {
              + 0.26 * Math.sin(bt * 233.1 + 2.7);
     const ny = Math.cos(bt * 81.4) + 0.55 * Math.cos(bt * 139.3 + 0.7)
              + 0.26 * Math.cos(bt * 211.9 + 1.9);
-    dx = nx * amp * 0.98;
-    dy = ny * amp * 0.98;
+    // 起爆瞬间的硬冲击：头 60 毫秒幅度接近三倍，之后立刻回到原来的衰减曲线。
+    // 爆炸的力道几乎全在最初那一下，平滑的起手会显得软。
+    const kick = 1 + 1.9 * Math.exp(-bt * 26);
+    dx = nx * amp * 0.98 * kick;
+    dy = ny * amp * 0.98 * kick;
     rot = (Math.sin(bt * 61) + 0.35 * Math.sin(bt * 107 + 0.9)) * decay * (cfg.amp / 28) * 0.68;
-    const cover = amp * 1.8 + Math.abs(rot) * (Math.PI / 180) * Math.max(W, H) * 0.5;
-    sc = 1 + (cover * 2) / Math.max(1, Math.min(W, H));
+    const cover = amp * 1.8 * kick + Math.abs(rot) * (Math.PI / 180) * Math.max(W, H) * 0.5;
+    // 镜头猛推：整屏在 0.2 秒内从放大 12% 缩回原位，冲击力立刻上一个档次
+    const punch = bt < 0.2 ? 0.12 * Math.pow(1 - bt / 0.2, 2) : 0;
+    sc = 1 + (cover * 2) / Math.max(1, Math.min(W, H)) + punch;
   }
 
   ctx.save();
@@ -692,12 +791,21 @@ function frame(now) {
   drawSparks(dt);
   ctx.restore();
 
-  // ---- 爆闪：同样画进画布，省掉一个全屏混合图层
-  const flash = bt < 0.03 ? 1 : Math.max(0, 1 - (bt - 0.03) / 0.24);
-  if (flash > 0.002) {
+  // ---- 爆闪：白光炸开 → 橙色余晖，中间叠两次二次爆的补闪。
+  // 全部合成一个颜色一次填充画完 —— 全屏填充是这里最贵的操作，不能画两遍。
+  // 白光要「狠而短」：全白只持续 25 毫秒，130 毫秒内退干净。
+  // 拖长了就只是一块白屏，冲击力全靠这一下明暗对比。
+  let white = bt < 0.025 ? 1 : Math.max(0, 1 - (bt - 0.025) / 0.11);
+  white *= white;
+  white = Math.max(white, 0.16 * Math.max(0, 1 - Math.abs(bt - 0.09) / 0.06));
+  white = Math.max(white, 0.11 * Math.max(0, 1 - Math.abs(bt - 0.2) / 0.07));
+  const warm = Math.max(0, 1 - bt / 0.32) * 0.14;
+  const lum = white + warm;
+  if (lum > 0.004) {
+    const w = white / Math.max(0.0001, lum);
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
-    ctx.fillStyle = `rgba(255,255,255,${flash * flash})`;
+    ctx.fillStyle = `rgba(255,${(255 * w + 130 * (1 - w)) | 0},${(255 * w + 35 * (1 - w)) | 0},${Math.min(1, lum)})`;
     ctx.fillRect(0, 0, W, H);
     ctx.restore();
   }
@@ -713,8 +821,14 @@ function frame(now) {
 
   window.__js = (window.__js || 0) + performance.now() - __js0;
 
-  if (bt * 1000 > TAIL_MS && sparks.length === 0 && smoke.length === 0) return done();
-  if (bt * 1000 > TAIL_MS + 1200) return done();
+  if (bt * 1000 > TAIL_MS && sparks.length === 0 && smoke.length === 0) {
+    dlog(`[boom] 正常收尾 bt=${bt.toFixed(2)}`);
+    return done();
+  }
+  if (bt * 1000 > TAIL_MS + 1200) {
+    dlog(`[boom] 兜底收尾 bt=${bt.toFixed(2)}`);
+    return done();
+  }
   requestAnimationFrame(frame);
 }
 
@@ -734,7 +848,7 @@ function perfReport() {
   // 以实测中位数为基准节奏，超过 1.5 倍才算真正的顿挫。
   const med = d[Math.floor(d.length / 2)];
   const jank = d.filter((v) => v > med * 1.5).length;
-  window.api.log(
+  dlog(
     `[perf] ${opt.primary ? '主屏' : '副屏'} 画布${canvas.width}x${canvas.height} ` +
     `节奏=${med.toFixed(1)}ms(≈${Math.round(1000 / med)}fps) ` +
     `p90=${q(0.9)} p99=${q(0.99)} 最大=${q(1)} 帧数=${d.length} ` +
@@ -788,7 +902,12 @@ function drawMessage(alpha, scale, dx, dy) {
 function done() {
   if (finished) return;
   finished = true;
+  running = false;
   perfReport();
+  if (W && H) {
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+  }
   // 留一点时间让上面那条日志的 IPC 落地。直接销毁窗口的话，
   // release 版够快，日志会在半路丢掉。浮层此时已经完全淡出，看不出差别。
   setTimeout(() => window.api.boomDone(), 50);
@@ -796,38 +915,73 @@ function done() {
 
 // ---------------------------------------------------------------- 启动
 
+// 截图监听只注册一次 —— 浮层是常驻复用的，每次引爆再注册会越堆越多
+window.api.onBoomShot(async (src) => {
+  // 迟到的截图要不要收：爆炸后 0.12 秒内爆闪仍然很亮，足以盖住内容跳变，
+  // 所以这段时间还能收；再晚就会看着像跳帧，宁可走降级效果。
+  if (animT < 0 || animT >= boomAt + 120) return;
+  shotEl.src = src;
+  try {
+    await (shotEl.decode ? shotEl.decode() : Promise.resolve());
+    ctx.drawImage(shotEl, 0, 0, 1, 1);   // 提前把纹理推上 GPU
+    ctx.clearRect(0, 0, 2, 2);
+    hasShot = true;
+  } catch { /* 解码失败就维持降级效果 */ }
+});
+
+// 每次引爆前把上一轮的残留全部清掉：窗口是复用的，状态不会自动归零
+function resetAll() {
+  sparks.length = 0;
+  debris.length = 0;
+  smoke.length = 0;
+  embers.length = 0;
+  cracks = [];
+  shockwaves = [];
+  fireballs = [];
+  bombSprites = null;
+  msgSprite = null;
+  hasShot = false;
+  shotEl.removeAttribute('src');
+  t0 = -1;
+  animT = -1;
+  last = 0;
+  lastDraw = 0;
+  finished = false;
+  window.__dt = [];
+  window.__dtFuse = [];
+  window.__dtBoom = [];
+  window.__js = 0;
+  window.__bake = 0;
+  if (W && H) {
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+  }
+}
+
+let running = false;
+
 window.api.onBoomInit(async (p) => {
+  if (running) return;          // 防重入
+  running = true;
+
   opt = { ...opt, ...p };
   cfg = PRESET[opt.intensity] || PRESET.normal;
   FUSE_MS = opt.fuse ? 900 : 0;
   boomAt = FUSE_MS;
   msgText.textContent = opt.text || '';
 
+  resetAll();
+  // 窗口刚从 1×1 放大回整屏，布局可能还没跟上；等到尺寸到位再开始，
+  // 否则画布会按 1×1 建，整场都是空的
+  for (let i = 0; i < 20; i++) {
+    const r = stage.getBoundingClientRect();
+    if (r.width > 8 && r.height > 8) break;
+    await new Promise((f) => requestAnimationFrame(f));
+  }
   resize();
-
-  // 关键：整屏截图有 1~2MB，解码和 GPU 上传要几百毫秒。
-  // 不先做掉的话，这笔开销正好砸在炸弹飞来和爆炸的头一秒上，帧率从 60 掉到 20。
-  // 截图是异步送达的（抓屏 0.4 秒，放在动画开跑之后做）。
-  // 飞入阶段浮层保持全透明 —— 用户看到的是自己的真实桌面，比冻结的截图更自然；
-  // 到引爆那一刻才切成画布里的截图，内容跳变被爆闪盖住。
-  hasShot = false;
-  window.api.onBoomShot(async (src) => {
-    // 迟到的截图要不要收：爆炸后 0.12 秒内爆闪仍然很亮，足以盖住内容跳变，
-    // 所以这段时间还能收；再晚就会看着像跳帧，宁可走降级效果。
-    // （抓屏耗时有波动，实测 0.41~0.73 秒，而飞入只有 0.9 秒，余量不算宽裕）
-    if (t0 >= 0 && performance.now() - t0 >= boomAt + 120) return;
-    shotEl.src = src;
-    try {
-      await (shotEl.decode ? shotEl.decode() : Promise.resolve());
-      ctx.drawImage(shotEl, 0, 0, 1, 1);   // 提前把纹理推上 GPU
-      ctx.clearRect(0, 0, 2, 2);
-      hasShot = true;
-    } catch { /* 解码失败就维持降级效果 */ }
-  });
-
   spawn();
 
-  // 预烘炸弹精灵并记录耗时，确认这一下没有拖慢首帧
+  // 预烘炸弹精灵：必须在时间轴启动之前做完，否则会变成每帧现烘
   const tb = performance.now();
   bakeAllBombs();
   window.__bake = performance.now() - tb;
@@ -840,8 +994,7 @@ window.api.onBoomInit(async (p) => {
       window.api.playSound('boom', opt.volume);
     }
   }
+  dlog(`[boom] 动画开始 primary=${opt.primary} fuse=${FUSE_MS} 画布=${canvas.width}x${canvas.height}`);
   requestAnimationFrame(frame);
 });
 
-window.api.boomReady();
-setTimeout(() => { if (t0 < 0) done(); }, 4000);   // 兜底：没收到初始化就自杀

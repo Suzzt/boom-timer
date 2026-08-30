@@ -86,8 +86,12 @@ struct AppState {
     settings: Settings,
     timer: Timer,
     booming: bool,
-    /// 每个爆炸窗口的初始化载荷，等前端 boom_ready 时取走
-    pending: HashMap<String, BoomPayload>,
+    /// 常驻的浮层窗口池：(窗口标签, 显示器坐标key)。
+    /// 浮层在启动时就建好并隐藏起来复用 —— webview 冷启动要 150ms，
+    /// 每次引爆现建窗口的话，这 150ms 全落在「时间到」之后的空白里。
+    overlays: Vec<(String, String)>,
+    /// 建池时的显示器布局签名，变了就重建
+    overlay_sig: String,
 }
 
 fn now_ms() -> u128 {
@@ -433,37 +437,53 @@ fn boom(app: AppHandle, from_timer: bool) {
         all.iter().find(|m| m.primary).copied().into_iter().collect()
     };
 
-    // 关键：先把窗口建起来让动画立刻开跑，再去抓屏。
-    // 抓屏要 0.4 秒以上，「先抓屏再建窗口」会让「时间到」之后有半秒多完全没反应，
-    // 然后炸弹突然出现 —— 最该有反应的那一刻在空转。
-    //
-    // 建窗口必须待在后台线程：build() 内部会派发到主线程并阻塞等待，
-    // 在主线程闭包里调用会直接死锁。
+    // 浮层是常驻的：启动时就建好并隐藏，引爆时只需要显示 + 发一个事件。
+    // 现建窗口的话 webview 冷启动要 150ms，这段时间全落在「时间到」之后的空白里。
     let will_capture = screen_state() == "granted" && !mons.is_empty();
-    let labels = spawn_overlays(&app, will_capture, mons.clone());
-    dbg_log(&app, &format!("浮层已创建，距引爆指令 {:?}", t_boom.elapsed()));
+    let labels = ensure_overlays(&app, &mons);
     BOOM_T0.lock().unwrap().replace(t_boom);
 
-    // 等前端真正跑起来再抓屏。screencapture 子进程很重，和 webview 启动抢 CPU 的话
-    // 两边都慢：实测并发时前端就绪从 146ms 拖到 726ms、抓屏从 460ms 拖到 1.04s。
-    // pending 表由前端的 boom_ready 取走，所以它空了就说明前端已就绪。
-    {
-        let deadline = std::time::Instant::now() + Duration::from_millis(1200);
-        loop {
-            let waiting = {
-                let st = app.state::<Mutex<AppState>>();
-                let s = st.lock().unwrap();
-                labels.iter().any(|(l, _)| s.pending.contains_key(l))
-            };
-            if !waiting || std::time::Instant::now() > deadline {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(15));
-        }
-        dbg_log(&app, &format!("前端就绪，开始抓屏，距引爆指令 {:?}", t_boom.elapsed()));
-    }
+    let settings = {
+        let st = app.state::<Mutex<AppState>>();
+        let s = st.lock().unwrap();
+        s.settings.clone()
+    };
+    let primary_key = mons
+        .iter()
+        .find(|m| m.primary)
+        .or_else(|| mons.first())
+        .map(|m| format!("{}:{}", m.key_x, m.key_y))
+        .unwrap_or_default();
 
-    // 炸弹飞入有 0.9 秒，抓屏来得及，视觉上无损。
+    for (i, (label, key)) in labels.iter().enumerate() {
+        let is_primary = *key == primary_key || labels.len() == 1;
+        let text = if settings.messages.is_empty() {
+            String::new()
+        } else {
+            settings.messages[(now_ms() as usize + i * 7) % settings.messages.len()].clone()
+        };
+        let payload = BoomPayload {
+            shot_pending: will_capture,
+            max_px: std::env::var("BOOM_MAXPX").ok().and_then(|v| v.parse().ok()),
+            intensity: settings.intensity.clone(),
+            sound: settings.sound && is_primary,
+            volume: settings.volume,
+            fuse: settings.fuse,
+            text,
+            primary: is_primary,
+        };
+        if let Some(w) = app.get_webview_window(label) {
+            if let Some(m) = mons.iter().find(|m| format!("{}:{}", m.key_x, m.key_y) == *key) {
+                let _ = w.set_position(tauri::LogicalPosition::new(m.x, m.y));
+                let _ = w.set_size(LogicalSize::new(m.w, m.h));
+            }
+            let _ = w.show();
+        }
+        let _ = app.emit_to(label.as_str(), "boom-go", payload);
+    }
+    dbg_log(&app, &format!("浮层已显示，距引爆指令 {:?}", t_boom.elapsed()));
+
+    // 窗口已经是热的，抓屏可以立刻开始，不用再等前端启动
     if will_capture {
         let t_cap = std::time::Instant::now();
         let shots = capture_screens(&app, &mons);
@@ -475,20 +495,23 @@ fn boom(app: AppHandle, from_timer: bool) {
         }
     }
 
-    // 等浮层放完自己关闭，最多兜底 12 秒
+    // 等浮层放完自己隐藏，最多兜底 12 秒
     let deadline = std::time::Instant::now() + Duration::from_secs(12);
     loop {
         std::thread::sleep(Duration::from_millis(200));
-        let alive = labels
-            .iter()
-            .any(|(l, _)| app.get_webview_window(l).is_some());
-        if !alive || std::time::Instant::now() > deadline {
+        let showing = labels.iter().any(|(l, _)| {
+            app.get_webview_window(l)
+                .and_then(|w| w.inner_size().ok())
+                .map(|sz| sz.width > 8)
+                .unwrap_or(false)
+        });
+        if !showing || std::time::Instant::now() > deadline {
             break;
         }
     }
     for (l, _) in &labels {
         if let Some(w) = app.get_webview_window(l) {
-            let _ = w.destroy();
+            let _ = w.set_size(LogicalSize::new(1.0, 1.0));
         }
     }
 
@@ -572,48 +595,56 @@ fn monitors() -> Vec<MonitorInfo> {
         .collect()
 }
 
-/// 在后台线程调用；其中只有原生 objc 那一步会切回主线程
-fn spawn_overlays(
-    app: &AppHandle,
-    shot_pending: bool,
-    mons: Vec<MonitorInfo>,
-) -> Vec<(String, String)> {
-    let settings = {
+fn layout_sig(mons: &[MonitorInfo]) -> String {
+    mons.iter()
+        .map(|m| format!("{}:{}:{}x{}", m.key_x, m.key_y, m.w as i32, m.h as i32))
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+/// 取出可用的常驻浮层；布局变了就重建。在后台线程调用。
+fn ensure_overlays(app: &AppHandle, mons: &[MonitorInfo]) -> Vec<(String, String)> {
+    let sig = layout_sig(mons);
+    let (cached, cached_sig) = {
         let st = app.state::<Mutex<AppState>>();
         let s = st.lock().unwrap();
-        s.settings.clone()
+        (s.overlays.clone(), s.overlay_sig.clone())
     };
+    // 窗口还在、布局也没变 —— 直接复用
+    if cached_sig == sig
+        && !cached.is_empty()
+        && cached
+            .iter()
+            .all(|(l, _)| app.get_webview_window(l).is_some())
+    {
+        return cached;
+    }
+    for (l, _) in &cached {
+        if let Some(w) = app.get_webview_window(l) {
+            let _ = w.destroy();
+        }
+    }
+    let fresh = spawn_overlays(app, mons.to_vec());
+    {
+        let st = app.state::<Mutex<AppState>>();
+        let mut s = st.lock().unwrap();
+        s.overlays = fresh.clone();
+        s.overlay_sig = sig;
+    }
+    fresh
+}
 
+/// 在后台线程调用；其中只有原生 objc 那一步会切回主线程
+fn spawn_overlays(app: &AppHandle, mons: Vec<MonitorInfo>) -> Vec<(String, String)> {
     let targets = mons;
 
     let mut labels = Vec::new();
     for (i, mon) in targets.iter().enumerate() {
         let key = format!("{}:{}", mon.key_x, mon.key_y);
-        let is_primary = mon.primary || (targets.len() == 1);
 
-        let text = if settings.messages.is_empty() {
-            String::new()
-        } else {
-            // 不引入 rand：用时间戳做个够用的随机
-            settings.messages[(now_ms() as usize + i * 7) % settings.messages.len()].clone()
-        };
 
-        let payload = BoomPayload {
-            shot_pending: shot_pending,
-            max_px: std::env::var("BOOM_MAXPX").ok().and_then(|v| v.parse().ok()),
-            primary: is_primary,
-            intensity: settings.intensity.clone(),
-            sound: settings.sound && is_primary,
-            volume: settings.volume,
-            fuse: settings.fuse,
-            text,
-        };
 
         let label = format!("boom-{}-{}", now_ms(), i);
-        {
-            let st = app.state::<Mutex<AppState>>();
-            st.lock().unwrap().pending.insert(label.clone(), payload);
-        }
 
         // position / inner_size 都是逻辑单位，MonitorInfo 已经换算好了
         let built = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("boom.html".into()))
@@ -640,33 +671,25 @@ fn spawn_overlays(
                 // 原生 NSWindow 操作必须在主线程，否则 AppKit 直接 SIGILL
                 let w2 = win.clone();
                 let _ = app.run_on_main_thread(move || platform::raise_overlay(&w2));
+                // 待命时缩到 1×1 并保持「可见」。
+                // 直接 hide() 的话 WebKit 会把 webview 判定为遮挡并节流 rAF，
+                // 再显示出来也不会立刻恢复（实测 57 帧跑了 5.5 秒）。
+                // 1×1 的全透明穿透窗口用户看不见，也几乎没有合成开销。
+                let _ = win.set_size(LogicalSize::new(1.0, 1.0));
                 let _ = win.show();
                 labels.push((label, key.clone()));
             }
-            Err(e) => {
-                eprintln!("爆炸窗口创建失败: {e}");
-                let st = app.state::<Mutex<AppState>>();
-                st.lock().unwrap().pending.remove(&label);
-            }
+            Err(e) => eprintln!("爆炸窗口创建失败: {e}"),
         }
     }
     labels
 }
 
 #[tauri::command]
-fn boom_ready(app: AppHandle, window: tauri::Window) -> Option<BoomPayload> {
-    if let Some(t) = BOOM_T0.lock().unwrap().as_ref() {
-        dbg_log(&app, &format!("前端就绪 {}，距引爆指令 {:?}", window.label(), t.elapsed()));
-    }
-    let st = app.state::<Mutex<AppState>>();
-    let mut s = st.lock().unwrap();
-    s.pending.remove(window.label())
-}
-
-#[tauri::command]
 fn boom_done(app: AppHandle, window: tauri::Window) {
+    // 缩回 1×1 而不是隐藏 —— 保持 webview「可见」，下次引爆 rAF 才不会被节流
     if let Some(w) = app.get_webview_window(window.label()) {
-        let _ = w.destroy();
+        let _ = w.set_size(LogicalSize::new(1.0, 1.0));
     }
 }
 
@@ -732,7 +755,8 @@ fn main() {
                 total_ms: 45 * 60000,
             },
             booming: false,
-            pending: HashMap::new(),
+            overlays: Vec::new(),
+            overlay_sig: String::new(),
         }))
         .invoke_handler(tauri::generate_handler![
             get_state,
@@ -744,7 +768,6 @@ fn main() {
             restart_app,
             dev_log,
             detonate,
-            boom_ready,
             boom_done,
             play_sound,
         ])
@@ -845,6 +868,25 @@ fn main() {
                     broadcast(&probe);
                 }
                 dbg_log(&probe, &format!("启动探测: 结果={}", screen_state()));
+            });
+
+            // 启动后预建浮层窗口（隐藏），把 webview 冷启动挪到引爆之前
+            let warm = handle.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(1200));
+                let mons = monitors();
+                let want_all = {
+                    let st = warm.state::<Mutex<AppState>>();
+                    let s = st.lock().unwrap();
+                    s.settings.all_screens
+                };
+                let mons: Vec<MonitorInfo> = if want_all {
+                    mons
+                } else {
+                    mons.iter().find(|m| m.primary).copied().into_iter().collect()
+                };
+                let n = ensure_overlays(&warm, &mons).len();
+                dbg_log(&warm, &format!("已预建 {} 个浮层窗口", n));
             });
 
             // 计时线程

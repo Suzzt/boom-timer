@@ -77,29 +77,36 @@
       // Tauri 版的初始化是异步的（要等截图解码 + 两帧预热），
       // 所以先把预热阶段排队的回调抽干，再开始推进时间轴。
       window.__seek = async (T) => {
-        // 先把截图送进去（真实运行时它在动画开跑后 ~0.4 秒到达，引爆前必到）
-        if (shotDeliver) { shotDeliver(shot); await new Promise((r) => setTimeout(r, 60)); }
         for (let i = 0; i < 8; i++) {
           const q2 = queue; queue = [];
           q2.forEach((cb) => cb(0));
           await new Promise((r) => setTimeout(r, 0));
         }
         let t = 0;
+        let delivered = false;
         while (t <= T) {
           if (!queue.length) break;
           const q2 = queue; queue = [];
           q2.forEach((cb) => cb(t));
           t += 16.6;
           await Promise.resolve();
+          // 动画跑起来之后才送截图 —— 渲染层有「t0 未初始化就丢弃」的守卫，
+          // 而真实运行时截图也确实是在动画开跑约 0.4 秒后才到达的
+          if (!delivered && t > 50 && shotDeliver) {
+            delivered = true;
+            shotDeliver(shot);
+            await new Promise((r) => setTimeout(r, 80));
+          }
         }
       };
     }
 
     let initCb = null;
     let shotDeliver = null;
+    const kickoff = () => window.api.__kick();
     window.api = {
-      onBoomInit: (cb) => { initCb = cb; },
-      boomReady: () => {
+      onBoomInit: (cb) => { initCb = cb; setTimeout(kickoff, 0); },
+      __kick: () => {
         (q.get('manual') ? ((f) => f()) : ((f) => setTimeout(f, 60)))(() => initCb({
           shotPending: !q.get('noshot'),
           intensity: q.get('i') || 'normal',
@@ -111,6 +118,7 @@
       },
       boomDone: () => { document.title = 'done'; },
       playSound: () => {},
+      log: () => {},
       // 模拟真实时序：截图在动画开跑之后才送达
       onBoomShot: (cb) => { if (!q.get('noshot')) shotDeliver = cb; },
     };
@@ -122,8 +130,10 @@
       const big = document.createElement('canvas');
       big.width = 1280; big.height = 720;
       const c = big.getContext('2d');
+      // 飞入阶段浮层是全透明的，用户看到的是自己的实时桌面 ——
+      // 导出时把桌面画成底，才还原真实观感（而不是一片白）
       const shot = document.getElementById('shot');
-      if (shot && shot.src && parseFloat(getComputedStyle(shot).opacity || '0') > 0.01) {
+      if (shot && shot.src && shot.complete && shot.naturalWidth) {
         c.drawImage(shot, 0, 0, 1280, 720);
       }
       const fx = document.getElementById('fx');

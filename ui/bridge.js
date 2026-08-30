@@ -6,7 +6,6 @@
 const { invoke, convertFileSrc } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
-let boomInitCb = null;
 
 window.api = {
   // --- 控制台
@@ -22,14 +21,14 @@ window.api = {
   log: (m) => invoke('dev_log', { msg: String(m) }),
 
   // --- 爆炸浮层
-  onBoomInit: (cb) => { boomInitCb = cb; },
+  // 浮层是常驻复用的：每次引爆由后端发 boom-go 事件带着载荷过来
+  onBoomInit: (cb) => listen('boom-go', (e) => {
+    const p = e.payload || {};
+    if (p.maxPx) window.__maxpx = p.maxPx;
+    cb(p);
+  }),
   // 截图是异步送达的：窗口先建、动画先跑，抓完再通过事件把文件路径推过来
   onBoomShot: (cb) => listen('boom-shot', (e) => cb(convertFileSrc(e.payload))),
-  boomReady: () => invoke('boom_ready').then((p) => {
-    if (!p || !boomInitCb) return;
-    if (p.maxPx) window.__maxpx = p.maxPx;
-    boomInitCb(p);
-  }),
   boomDone: () => invoke('boom_done'),
 
   // 浮层永不获得焦点，WKWebView 下放不出声，交给主窗口代播

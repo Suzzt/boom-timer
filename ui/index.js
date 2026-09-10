@@ -42,6 +42,9 @@ function render(s) {
   for (const b of document.querySelectorAll('#intensity button')) {
     b.classList.toggle('on', b.dataset.v === st.intensity);
   }
+  for (const b of document.querySelectorAll('#mode button')) {
+    b.classList.toggle('on', b.dataset.m === (st.mode || 'hole'));
+  }
 
   $('perm').classList.toggle('hidden', s.screenPermission === 'granted');
 }
@@ -70,6 +73,10 @@ for (const b of document.querySelectorAll('#presets button')) {
 
 for (const b of document.querySelectorAll('#intensity button')) {
   b.onclick = () => window.api.setSettings({ intensity: b.dataset.v });
+}
+
+for (const b of document.querySelectorAll('#mode button')) {
+  b.onclick = () => window.api.setSettings({ mode: b.dataset.m });
 }
 
 $('min').addEventListener('focus', () => { editing = true; });

@@ -902,6 +902,7 @@ function drawMessage(alpha, scale, dx, dy) {
 function done() {
   if (finished) return;
   finished = true;
+  canvas.style.display = 'none';
   running = false;
   perfReport();
   if (W && H) {
@@ -962,7 +963,10 @@ let running = false;
 
 window.api.onBoomInit(async (p) => {
   if (running) return;          // 防重入
+  // 黑洞模式交给 hole.js，两个模式各用一张画布，互不干扰
+  if (p && p.mode === 'hole') return;
   running = true;
+  canvas.style.display = 'block';
 
   opt = { ...opt, ...p };
   cfg = PRESET[opt.intensity] || PRESET.normal;

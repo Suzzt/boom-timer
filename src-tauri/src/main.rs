@@ -24,6 +24,9 @@ struct Settings {
     sound: bool,
     volume: f64,
     intensity: String,
+    /// 效果模式：boom = 爆炸，hole = 黑洞吸屏（需点击复原）
+    #[serde(default = "default_mode")]
+    mode: String,
     fuse: bool,
     #[serde(rename = "allScreens")]
     all_screens: bool,
@@ -38,6 +41,7 @@ impl Default for Settings {
             sound: true,
             volume: 0.7,
             intensity: "normal".into(),
+            mode: default_mode(),
             fuse: true,
             all_screens: false,
             messages: vec![
@@ -50,6 +54,10 @@ impl Default for Settings {
             ],
         }
     }
+}
+
+fn default_mode() -> String {
+    "hole".into()
 }
 
 fn settings_path(app: &AppHandle) -> Option<std::path::PathBuf> {
@@ -120,9 +128,13 @@ struct BoomPayload {
     /// 实验用：覆盖画布像素上限（BOOM_MAXPX）
     #[serde(rename = "maxPx")]
     max_px: Option<f64>,
+    /// 实验用：碎块列数（BOOM_HOLE_COLS）
+    #[serde(rename = "holeCols")]
+    hole_cols: Option<u32>,
     /// 副屏走轻量档：两个全屏浮层同时跑会互相抢 GPU，把帧率从 60 拖到 20
     primary: bool,
     intensity: String,
+    mode: String,
     sound: bool,
     volume: f64,
     fuse: bool,
@@ -465,7 +477,9 @@ fn boom(app: AppHandle, from_timer: bool) {
         let payload = BoomPayload {
             shot_pending: will_capture,
             max_px: std::env::var("BOOM_MAXPX").ok().and_then(|v| v.parse().ok()),
+            hole_cols: std::env::var("BOOM_HOLE_COLS").ok().and_then(|v| v.parse().ok()),
             intensity: settings.intensity.clone(),
+            mode: settings.mode.clone(),
             sound: settings.sound && is_primary,
             volume: settings.volume,
             fuse: settings.fuse,
@@ -495,8 +509,28 @@ fn boom(app: AppHandle, from_timer: bool) {
         }
     }
 
-    // 等浮层放完自己隐藏，最多兜底 12 秒
-    let deadline = std::time::Instant::now() + Duration::from_secs(12);
+    // 测试用：自动复原，免得每次调试都把屏幕锁住等人点
+    if let Ok(ms) = std::env::var("BOOM_HOLE_AUTOCLICK") {
+        if settings.mode == "hole" {
+            let h = app.clone();
+            let d: u64 = ms.parse().unwrap_or(1500);
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(d));
+                let _ = h.emit("hole-dismiss", ());
+            });
+        }
+    }
+
+    // 黑洞模式要等用户点击，兜底时间必须放长；但也必须有上限 ——
+    // 前端万一卡住，全屏窗口不能永远吃着输入。
+    let is_hole = settings.mode == "hole";
+    let cap = if is_hole {
+        // 可调，方便验证兜底真的会触发
+        std::env::var("BOOM_HOLE_CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(150)
+    } else {
+        12
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(cap);
     loop {
         std::thread::sleep(Duration::from_millis(200));
         let showing = labels.iter().any(|(l, _)| {
@@ -509,11 +543,14 @@ fn boom(app: AppHandle, from_timer: bool) {
             break;
         }
     }
+    // 无论正常结束还是超时兜底，都必须把点击穿透恢复回来
     for (l, _) in &labels {
         if let Some(w) = app.get_webview_window(l) {
+            let _ = w.set_ignore_cursor_events(true);
             let _ = w.set_size(LogicalSize::new(1.0, 1.0));
         }
     }
+    HOLE_ACTIVE.store(false, Ordering::Relaxed);
 
     sweep_shots(&app);
 
@@ -685,6 +722,23 @@ fn spawn_overlays(app: &AppHandle, mons: Vec<MonitorInfo>) -> Vec<(String, Strin
     labels
 }
 
+/// 前端把「点击复原」挂好之后才调这个，Rust 这才打开点击捕获。
+/// 顺序反过来的话，一旦前端出错，全屏浮层会吃掉所有输入把用户锁在外面。
+#[tauri::command]
+fn hole_armed(app: AppHandle, window: tauri::Window) {
+    if let Some(w) = app.get_webview_window(window.label()) {
+        let _ = w.set_ignore_cursor_events(false);
+    }
+    HOLE_ACTIVE.store(true, Ordering::Relaxed);
+    dbg_log(&app, &format!("黑洞已接管点击 {}", window.label()));
+}
+
+/// 任意一块屏上点一下，所有屏一起复原
+#[tauri::command]
+fn hole_dismiss(app: AppHandle) {
+    let _ = app.emit("hole-dismiss", ());
+}
+
 #[tauri::command]
 fn boom_done(app: AppHandle, window: tauri::Window) {
     // 缩回 1×1 而不是隐藏 —— 保持 webview「可见」，下次引爆 rAF 才不会被节流
@@ -715,6 +769,8 @@ fn fmt_ms(ms: i64) -> String {
 static LAST_TIP: Mutex<Option<String>> = Mutex::new(None);
 /// 引爆起始时刻，用来量「指令 → 浮层出画」的延迟
 static BOOM_T0: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+/// 黑洞是否正在接管点击，用于收尾时确认已经恢复穿透
+static HOLE_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 fn update_tray(app: &AppHandle, state: &StatePayload) {
     let tip = if state.running {
@@ -769,6 +825,8 @@ fn main() {
             dev_log,
             detonate,
             boom_done,
+            hole_armed,
+            hole_dismiss,
             play_sound,
         ])
         .setup(|app| {

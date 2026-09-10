@@ -36,6 +36,7 @@
     <img id="shot" alt="" />
     <div id="dim"></div>
     <canvas id="fx"></canvas>
+    <canvas id="hole"></canvas>
     <div id="flash"></div>
     <div id="msg"><div id="msg-emoji">💥</div><div id="msg-text"></div></div>
   </div>
@@ -101,29 +102,41 @@
       };
     }
 
-    let initCb = null;
+    let initCbs = [];
     let shotDeliver = null;
+    let holeDismissCb = null;
     const kickoff = () => window.api.__kick();
     window.api = {
-      onBoomInit: (cb) => { initCb = cb; setTimeout(kickoff, 0); },
+      // 两个模式各自注册，按 ?mode= 只喂给对应的那个
+      onBoomInit: (cb) => { initCbs.push(cb); setTimeout(kickoff, 0); },
       __kick: () => {
-        (q.get('manual') ? ((f) => f()) : ((f) => setTimeout(f, 60)))(() => initCb({
+        (q.get('manual') ? ((f) => f()) : ((f) => setTimeout(f, 60)))(() => initCbs.forEach((cb) => cb({
+          mode: q.get('mode') || 'boom',
           shotPending: !q.get('noshot'),
           intensity: q.get('i') || 'normal',
           sound: false, volume: 0.7,
           fuse: q.get('fuse') !== '0',
           text: '起来动一动！',
           primary: true,
-        }));
+        })));
       },
+      holeArmed: () => {},
+      holeDismiss: () => { if (holeDismissCb) holeDismissCb(); },
+      onHoleDismiss: (cb) => { holeDismissCb = cb; },
       boomDone: () => { document.title = 'done'; },
       playSound: () => {},
       log: () => {},
       // 模拟真实时序：截图在动画开跑之后才送达
-      onBoomShot: (cb) => { if (!q.get('noshot')) shotDeliver = cb; },
+      onBoomShot: (cb) => {
+        if (q.get('noshot')) return;
+        shotDeliver = cb;
+        // 非定格模式下按真实时序补送：实测抓屏 0.4~0.7 秒
+        if (!q.get('manual')) setTimeout(() => cb(shot), Number(q.get('shotdelay') || 450));
+      },
     };
   </script>
   <script src="boom.js"></script>
+  <script src="hole.js"></script>
   <script>
     // 把当前这一帧合成成一张完整图片存到 assets/（画布 + 仍可见的 DOM 截图层 + 文案）
     window.__export = async (name, w = 1040, h = 585) => {
@@ -136,8 +149,18 @@
       if (shot && shot.src && shot.complete && shot.naturalWidth) {
         c.drawImage(shot, 0, 0, 1280, 720);
       }
-      const fx = document.getElementById('fx');
-      if (fx && fx.tagName === 'CANVAS') c.drawImage(fx, 0, 0, 1280, 720);
+      for (const id of ['fx', 'hole']) {
+        const cv = document.getElementById(id);
+        if (!cv || cv.tagName !== 'CANVAS') continue;
+        if (getComputedStyle(cv).display === 'none') continue;
+        // 黑洞模式的「实底」是画布的 CSS 背景色，导图时要一并还原
+        const bg = getComputedStyle(cv).backgroundColor;
+        if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') {
+          c.fillStyle = bg;
+          c.fillRect(0, 0, 1280, 720);
+        }
+        c.drawImage(cv, 0, 0, 1280, 720);
+      }
       const msg = document.getElementById('msg');
       const op = parseFloat(msg.style.opacity || '0');
       if (op > 0.05) {

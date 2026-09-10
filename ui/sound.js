@@ -189,6 +189,97 @@ function playBoom() {
   tail.start(now + 0.04);
 }
 
+/* 黑洞吸屏：下行扫频 + 越收越紧的隆隆声。和爆炸那种「一下炸开」正好相反，
+   这里要的是持续被往里拽的压迫感。 */
+function playSuck(sec) {
+  const ac = audio();
+  if (!ac) return;
+  const now = ac.currentTime;
+  const master = ac.createGain();
+  master.gain.value = volume;
+  master.connect(ac.destination);
+
+  // 下行扫频：音高一路往下掉，听感上就是「被拉走」
+  const sweep = ac.createOscillator();
+  const sweepG = ac.createGain();
+  sweep.type = 'sawtooth';
+  sweep.frequency.setValueAtTime(680, now);
+  sweep.frequency.exponentialRampToValueAtTime(42, now + sec * 0.92);
+  const lp = ac.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.setValueAtTime(1800, now);
+  lp.frequency.exponentialRampToValueAtTime(160, now + sec * 0.9);
+  lp.Q.value = 6;
+  sweepG.gain.setValueAtTime(0.0001, now);
+  sweepG.gain.exponentialRampToValueAtTime(0.5, now + 0.25);
+  sweepG.gain.setValueAtTime(0.5, now + sec * 0.72);
+  sweepG.gain.exponentialRampToValueAtTime(0.0001, now + sec);
+  sweep.connect(lp).connect(sweepG).connect(master);
+  sweep.start(now);
+  sweep.stop(now + sec + 0.05);
+
+  // 噪声底：带通一路下扫，像气流被抽走
+  const air = ac.createBufferSource();
+  air.buffer = noiseBuffer(ac, sec + 0.2);
+  const bp = ac.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.frequency.setValueAtTime(2600, now);
+  bp.frequency.exponentialRampToValueAtTime(220, now + sec * 0.88);
+  bp.Q.value = 1.4;
+  const airG = ac.createGain();
+  airG.gain.setValueAtTime(0.0001, now);
+  airG.gain.exponentialRampToValueAtTime(0.42, now + 0.35);
+  airG.gain.exponentialRampToValueAtTime(0.0001, now + sec);
+  air.connect(bp).connect(airG).connect(master);
+  air.start(now);
+
+  // 低频托底，收尾沉下去
+  const sub = ac.createOscillator();
+  const subG = ac.createGain();
+  sub.type = 'sine';
+  sub.frequency.setValueAtTime(70, now);
+  sub.frequency.exponentialRampToValueAtTime(26, now + sec);
+  subG.gain.setValueAtTime(0.0001, now);
+  subG.gain.exponentialRampToValueAtTime(0.55, now + sec * 0.6);
+  subG.gain.exponentialRampToValueAtTime(0.0001, now + sec + 0.35);
+  sub.connect(subG).connect(master);
+  sub.start(now);
+  sub.stop(now + sec + 0.4);
+}
+
+/* 复原：短促上行 + 一声轻响，给「点了一下」一个干脆的回馈 */
+function playRestore() {
+  const ac = audio();
+  if (!ac) return;
+  const now = ac.currentTime;
+  const master = ac.createGain();
+  master.gain.value = volume;
+  master.connect(ac.destination);
+
+  const up = ac.createOscillator();
+  const upG = ac.createGain();
+  up.type = 'triangle';
+  up.frequency.setValueAtTime(90, now);
+  up.frequency.exponentialRampToValueAtTime(720, now + 0.26);
+  upG.gain.setValueAtTime(0.0001, now);
+  upG.gain.exponentialRampToValueAtTime(0.5, now + 0.05);
+  upG.gain.exponentialRampToValueAtTime(0.0001, now + 0.34);
+  up.connect(upG).connect(master);
+  up.start(now);
+  up.stop(now + 0.36);
+
+  const pop = ac.createBufferSource();
+  pop.buffer = noiseBuffer(ac, 0.16);
+  const hp = ac.createBiquadFilter();
+  hp.type = 'highpass';
+  hp.frequency.value = 900;
+  const popG = ac.createGain();
+  popG.gain.setValueAtTime(0.34, now + 0.24);
+  popG.gain.exponentialRampToValueAtTime(0.0001, now + 0.42);
+  pop.connect(hp).connect(popG).connect(master);
+  pop.start(now + 0.24);
+}
+
 window.BoomSound = {
   // 首次交互时解锁 AudioContext，之后自动播放不再受限
   unlock() {
@@ -199,6 +290,8 @@ window.BoomSound = {
   play(kind, vol, seconds) {
     volume = typeof vol === 'number' ? vol : 0.7;
     if (kind === 'fuse') playFuse(seconds || 0.5);
+    else if (kind === 'suck') playSuck(seconds || 2.1);
+    else if (kind === 'restore') playRestore();
     else playBoom();
   },
 };

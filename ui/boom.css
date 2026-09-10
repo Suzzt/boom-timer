@@ -40,7 +40,13 @@ html, body {
   opacity: 0;
 }
 
-#fx { position: absolute; inset: 0; width: 100%; height: 100%; }
+#fx, #hole {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: none;
+}
 
 #flash {
   position: absolute;

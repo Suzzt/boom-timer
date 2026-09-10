@@ -25,11 +25,18 @@ window.api = {
   onBoomInit: (cb) => listen('boom-go', (e) => {
     const p = e.payload || {};
     if (p.maxPx) window.__maxpx = p.maxPx;
+    if (p.holeCols) window.__holeCols = p.holeCols;
     cb(p);
   }),
   // 截图是异步送达的：窗口先建、动画先跑，抓完再通过事件把文件路径推过来
   onBoomShot: (cb) => listen('boom-shot', (e) => cb(convertFileSrc(e.payload))),
   boomDone: () => invoke('boom_done'),
+
+  // 黑洞模式：前端挂好复原处理器之后才让 Rust 打开点击捕获
+  holeArmed: () => invoke('hole_armed'),
+  // 任意一块屏上点一下，广播给所有屏一起复原
+  holeDismiss: () => invoke('hole_dismiss'),
+  onHoleDismiss: (cb) => listen('hole-dismiss', () => cb()),
 
   // 浮层永不获得焦点，WKWebView 下放不出声，交给主窗口代播
   playSound: (kind, volume, seconds) =>

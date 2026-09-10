@@ -1,6 +1,6 @@
 [package]
 name = "boom-timer"
-version = "1.2.0"
+version = "1.3.0"
 description = "上班族解压定时器"
 edition = "2021"
 
